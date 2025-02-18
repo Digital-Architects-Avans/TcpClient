@@ -101,6 +101,7 @@ namespace TcpServer
             }
         }
 
+        // TODO: Move the help functionality to the server side, display on connection or setting server ip/port
         private static void PrintHelp()
         {
             var helpText = $"""
