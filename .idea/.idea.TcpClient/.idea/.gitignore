@@ -1,0 +1,61 @@
+# Default ignored files for Rider
+/shelf/
+/workspace.xml
+/modules.xml
+/.idea.TcpClient.iml
+/contentModel.xml
+/projectSettingsUpdater.xml
+
+# Editor-based HTTP Client requests
+/httpRequests/
+
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+# C# build files
+bin/
+obj/
+
+# Temporary files
+*.tmp
+*.bak
+*~ 
+
+# Rider IDE-related logs and indexes
+.idea/
+.idea_modules/
+.idea/workspace.xml
+.idea/usage.stats.xml
+.idea/dictionaries
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs
+*.log
+
+# Dependency directories
+packages/
+node_modules/
+
+# Resharper files
+_ReSharper*/
+*_ReSharper.Caches/
+
+# Build Results
+dist/
+out/
+
+# Visual Studio 2017/2019
+.vs/
+.vscode/
+
+# Rider-specific HTTP requests cache
+/.idea/httpRequests/
+
+# macOS-specific system files
+.DS_Store
