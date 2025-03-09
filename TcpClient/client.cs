@@ -10,7 +10,7 @@ namespace TcpServer
     internal class WebSocketFileClient
     {
         private const string PartialSuffix = ".partial"; // .partial extension used during upload transaction
-        private const int PartialFileTimeoutSeconds = 10; // Timeout value for partial files
+        private const int PartialFileTimeoutSeconds = 10*60; // Timeout value for partial files
         private const string ServerUrl = "ws://127.0.0.1:5678";
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
         private static ILogger<WebSocketFileClient> _logger = null!;
@@ -28,6 +28,7 @@ namespace TcpServer
         {
             _logger = SetupLogging();
             Console.WriteLine("[INFO] Welcome to the WebSocket File Transfer Client!");
+            StartStaleFileCleanup();
             PrintHelp();
 
             if (!Directory.Exists(SyncFolder))
