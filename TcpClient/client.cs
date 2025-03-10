@@ -3,6 +3,8 @@ using System.Net.WebSockets;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using System.Text.RegularExpressions;
+
 
 namespace TcpServer
 {
@@ -129,6 +131,63 @@ Available commands:
 /quit                  - Exit the application.
 ------------------------------------------------------");
         }
+        
+        // FE10 sanitize and compatibility
+        public static class FileNameSanitizer
+        {
+            public static string SanitizeFilename(string filename, int maxLength = 200, string targetCharset = "UTF-8")
+            {
+                if (string.IsNullOrWhiteSpace(filename))
+                {
+                    throw new ArgumentException("Filename cannot be null or empty.", nameof(filename));
+                }
+
+
+                // Normaliseer naar Unicode NFC-formaat.
+                filename = filename.Normalize(NormalizationForm.FormC);
+
+                // Verwijder alle Unicode-verwijzingen.
+                filename = Regex.Replace(filename, @"[<>:""/\\|?*\x00-\x1F;`&|$!'()]", "");
+                
+                if (targetCharset.Equals("ASCII", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Replace non-ASCII characters with an empty string.
+                    var asciiBytes = Encoding.ASCII.GetBytes(filename);
+                    filename = Encoding.ASCII.GetString(asciiBytes);
+                }
+                // Trim leading and trailing spaces or dots.
+                filename = filename.Trim(' ', '.');
+                filename = filename.ToLowerInvariant();
+
+                // Choose encoding based on targetCharset.
+                Encoding encoding;
+                try
+                {
+                    encoding = Encoding.GetEncoding(targetCharset);
+                }
+                catch (Exception ex)
+                {
+                    throw new ArgumentException($"The provided target charset '{targetCharset}' is not valid.", nameof(targetCharset), ex);
+                }
+
+
+                // Check if the filename length exceeds the maximum allowed length in the given encoding.
+                int byteLength = encoding.GetByteCount(filename);
+                if (byteLength > maxLength)
+                {
+                    throw new ArgumentException($"Filename exceeds the maximum length of {maxLength} bytes in {targetCharset} encoding.");
+                }
+
+                // If the filename becomes empty after sanitization, throw an error.
+                if (string.IsNullOrEmpty(filename))
+                {
+                    throw new ArgumentException("Filename became empty after sanitization.");
+                }
+                
+                return filename;
+            }
+        }
+
 
         /// <summary>
         /// Starts a persistent ClientWebSocket connection to receive notifications from the server.
@@ -574,12 +633,50 @@ Available commands:
 
             watcher.Created += async (_, e) =>
             {
-                if (Path.GetFileName(e.FullPath).StartsWith("~$") || Path.GetFileName(e.FullPath).StartsWith("."))
-                    return; // Ignore temp files
-                await Task.Delay(500); // Prevent duplicate rapid events
-                Console.WriteLine($"[LOCAL] File created: {e.Name}");
-                await SendNotificationAsync("created", e.FullPath);
+                // Sla tijdelijke of verborgen bestanden over.
+                string originalFileName = Path.GetFileName(e.FullPath);
+                if (originalFileName.StartsWith("~$") || originalFileName.StartsWith("."))
+                    return; 
+
+                await Task.Delay(500); 
+
+                string sanitizedFileName;
+                try
+                {
+                    sanitizedFileName = FileNameSanitizer.SanitizeFilename(originalFileName);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[LOCAL] Fout tijdens het sanitizen van de bestandsnaam: {ex.Message}");
+                    return;
+                }
+
+                string directory = Path.GetDirectoryName(e.FullPath);
+                string sanitizedFullPath = Path.Combine(directory, sanitizedFileName);
+
+                if (!string.Equals(originalFileName, sanitizedFileName, StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        File.Move(e.FullPath, sanitizedFullPath);
+                        Console.WriteLine($"[LOCAL] Bestand hernoemd van '{originalFileName}' naar '{sanitizedFileName}'.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[LOCAL] Fout tijdens hernoemen: {ex.Message}");
+                        return;
+                    }
+                }
+                else
+                {
+                    // Indien de naam niet gewijzigd wordt, gebruik dan het originele pad.
+                    sanitizedFullPath = e.FullPath;
+                }
+
+                Console.WriteLine($"[LOCAL] File created: {sanitizedFileName}");
+                await SendNotificationAsync("created", sanitizedFullPath);
             };
+
 
             watcher.Changed += async (_, e) =>
             {
