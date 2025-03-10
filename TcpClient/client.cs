@@ -137,25 +137,25 @@ Available commands:
         {
             public static string SanitizeFilename(string filename, int maxLength = 200, string targetCharset = "UTF-8")
             {
+                // Empty file name check
                 if (string.IsNullOrWhiteSpace(filename))
                 {
                     throw new ArgumentException("Filename cannot be null or empty.", nameof(filename));
                 }
-
-
-                // Normaliseer naar Unicode NFC-formaat.
+                
+                // Normalize Unicode NFC-format.
                 filename = filename.Normalize(NormalizationForm.FormC);
 
-                // Verwijder alle Unicode-verwijzingen.
+                // Delete Unicode signs.
                 filename = Regex.Replace(filename, @"[<>:""/\\|?*\x00-\x1F;`&|$!'()]", "");
                 
                 if (targetCharset.Equals("ASCII", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Replace non-ASCII characters with an empty string.
+                    // Delete non-ASCII characters.
                     var asciiBytes = Encoding.ASCII.GetBytes(filename);
                     filename = Encoding.ASCII.GetString(asciiBytes);
                 }
-                // Trim leading and trailing spaces or dots.
+                // Trim leading and trailing spaces/dots.
                 filename = filename.Trim(' ', '.');
                 filename = filename.ToLowerInvariant();
 
@@ -171,14 +171,14 @@ Available commands:
                 }
 
 
-                // Check if the filename length exceeds the maximum allowed length in the given encoding.
+                // Check filename length
                 int byteLength = encoding.GetByteCount(filename);
                 if (byteLength > maxLength)
                 {
                     throw new ArgumentException($"Filename exceeds the maximum length of {maxLength} bytes in {targetCharset} encoding.");
                 }
 
-                // If the filename becomes empty after sanitization, throw an error.
+                // Check if file name not empty after sanitization
                 if (string.IsNullOrEmpty(filename))
                 {
                     throw new ArgumentException("Filename became empty after sanitization.");
