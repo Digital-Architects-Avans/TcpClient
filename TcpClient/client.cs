@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -8,11 +9,17 @@ namespace TcpServer
 {
     internal class WebSocketFileClient
     {
-        private const string ServerUrl = "wss://127.0.0.1:5678";
+        private const string PartialSuffix = ".partial"; // .partial extension used during upload transaction
+        private const int PartialFileTimeoutSeconds = 10*60; // Timeout value for partial files
+        private const string ServerUrl = "wss://127.0.0.1:5678";>>>>>>> master
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
         private static ILogger<WebSocketFileClient> _logger = null!;
         private static ClientWebSocket? _notificationSocket;
         private static readonly ConcurrentDictionary<string, long> LastNotificationTimes = new();
+        private static readonly string[] IgnoredPrefixes = ["~$", "."];
+        private static readonly string[] IgnoredSuffixes = [".swp", ".tmp", ".lock", ".part", ".partial", ".crdownload", ".download", ".bak", ".old", ".temp", ".sha256"
+        ];
+
 
         // Cancellation token for the notification receiver
         private static CancellationTokenSource? _notificationCts;
@@ -21,6 +28,7 @@ namespace TcpServer
         {
             _logger = SetupLogging();
             Console.WriteLine("[INFO] Welcome to the WebSocket File Transfer Client!");
+            StartStaleFileCleanup();
             PrintHelp();
 
             if (!Directory.Exists(SyncFolder))
@@ -180,6 +188,22 @@ Available commands:
                 retryDelay = Math.Min(retryDelay * 2, 30000); // Max delay of 30 seconds
             }
         }
+        
+        private static async Task<string?> ComputeFileHashAsync(string filePath)
+        {
+            try
+            {
+                using var sha256 = SHA256.Create();
+                await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                var hashBytes = await sha256.ComputeHashAsync(stream);
+                return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Error computing hash for file {FilePath}: {Message}", filePath, ex.Message);
+                throw;
+            }
+        }
 
         /// <summary>
         /// Sends a notification message to the server. 
@@ -199,13 +223,9 @@ Available commands:
                 timestamp, // If new entry, store timestamp
                 (_, lastSent) =>
                 {
-                    if (timestamp - lastSent < 5)
-                    {
-                        _logger.LogWarning($"Skipping duplicate notification for '{filename}' within cooldown period.");
-                        return lastSent; // Keep existing timestamp
-                    }
-
-                    return timestamp; // Update timestamp
+                    if (timestamp - lastSent >= 5) return timestamp; // Update timestamp
+                    _logger.LogWarning($"Skipping duplicate notification for '{filename}' within cooldown period.");
+                    return lastSent; // Keep existing timestamp
                 });
 
             // **Ignore empty files to prevent premature uploads**
@@ -213,6 +233,22 @@ Available commands:
             {
                 _logger.LogWarning($"Ignoring file '{filename}' because its size is 0 bytes.");
                 return;
+            }
+            
+            // Compute hash only for created or modified events and if file exists.
+            string? fileHash = null;
+            if ((eventType.Equals("created", StringComparison.OrdinalIgnoreCase) ||
+                 eventType.Equals("modified", StringComparison.OrdinalIgnoreCase)) && File.Exists(fullPath))
+            {
+                try
+                {
+                    fileHash = await ComputeFileHashAsync(fullPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError("Failed to compute hash for '{FileName}': {Message}", filename, ex.Message);
+                    // Depending on your policy, you could continue without the hash or abort sending notification.
+                }
             }
 
             // **Ensure WebSocket connection is alive**
@@ -233,7 +269,8 @@ Available commands:
                 @event = eventType,
                 filename = filename,
                 timestamp = timestamp,
-                size = fileSize
+                size = fileSize,
+                hash = fileHash  // Will be null if not computed
             };
 
             var json = JsonConvert.SerializeObject(notification);
@@ -242,7 +279,7 @@ Available commands:
                 CancellationToken.None);
 
             Console.WriteLine(
-                $"[INFO] Sent notification: File '{filename}' {eventType} at {timestamp} (size: {fileSize} bytes)");
+                $"[INFO] Sent notification: File '{filename}' {eventType} at {timestamp} (size: {fileSize} bytes){(fileHash != null ? $" hash: {fileHash}" : string.Empty)}");
         }
 
         private static async Task ReconnectNotificationSocketAsync()
@@ -412,12 +449,68 @@ Available commands:
                 _logger.LogError("Error uploading file: {Message}", ex.Message);
             }
         }
+        
+        // FE7
+        // Starts a background task for cleaning up stale .partial files, if any exist.
+        private static void StartStaleFileCleanup()
+        {
+            var partialFilesExist = Directory
+                .EnumerateFiles(SyncFolder)
+                .Any(f => f.EndsWith(PartialSuffix, StringComparison.OrdinalIgnoreCase));
+
+            if (partialFilesExist)
+            {
+                _logger.LogInformation("Stale partial file(s) detected. Starting cleanup task.");
+                _ = Task.Run(() => CleanStalePartialFilesAsync());
+            }
+            else
+            {
+                _logger.LogInformation("No partial files found. Cleanup task not needed.");
+            }
+        }
+        // Asynchronously waits for the timeout duration and then cleans up any stale .partial files.
+        private static async Task CleanStalePartialFilesAsync()
+        {
+            // Wait for the defined timeout period plus an extra second
+            await Task.Delay(TimeSpan.FromSeconds(PartialFileTimeoutSeconds + 1));
+
+            DateTime currentTime = DateTime.UtcNow;
+            try
+            {
+                var partialFiles = Directory
+                    .EnumerateFiles(SyncFolder)
+                    .Where(f => f.EndsWith(PartialSuffix, StringComparison.OrdinalIgnoreCase));
+
+                foreach (var file in partialFiles)
+                {
+                    var lastWriteTime = File.GetLastWriteTimeUtc(file);
+                    if ((currentTime - lastWriteTime).TotalSeconds > PartialFileTimeoutSeconds)
+                    {
+                        _logger.LogInformation("Deleting stale file: {FilePath}", file);
+                        try
+                        {
+                            File.Delete(file);
+                        }
+                        catch (Exception deleteEx)
+                        {
+                            _logger.LogError(deleteEx, "Unable to delete stale file: {FilePath}", file);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during stale partial files cleanup.");
+            }
+        }
+
 
         /// <summary>
         /// Downloads a file from the server using ClientWebSocket.
         /// </summary>
         private static async Task DownloadFileAsync(string fileName)
         {
+            string tempFileName = fileName + PartialSuffix;
             var metadata = new { command = "DOWNLOAD", filename = fileName };
 
             try
@@ -437,7 +530,7 @@ Available commands:
                 await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
                     CancellationToken.None);
 
-                var filePath = Path.Combine(SyncFolder, fileName);
+                var filePath = Path.Combine(SyncFolder, tempFileName);
                 await using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write);
                 var buffer = new byte[8192];
                 var eofReceived = false;
@@ -471,6 +564,21 @@ Available commands:
                     }
                 }
 
+                try
+                {
+                    // After the download completes, rename the file removing the .partial suffix and move it to the SyncFolder.
+                    var newFilePath = Path.Combine(SyncFolder, fileName);
+                    File.Move(filePath, newFilePath);
+                    Console.WriteLine($"[INFO] File '{tempFileName}' converted to '{fileName}'.");
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e);
+                    throw;
+                }
+
+
+
                 Console.WriteLine(eofReceived
                     ? $"File '{fileName}' downloaded successfully."
                     : $"File '{fileName}' download incomplete.");
@@ -481,6 +589,11 @@ Available commands:
             catch (Exception ex)
             {
                 _logger.LogError("Error downloading file: {Message}", ex.Message);
+            }
+            finally
+            {
+                // Start the background cleanup of stale partial files.  
+                StartStaleFileCleanup();
             }
         }
 
@@ -586,6 +699,16 @@ Available commands:
                 _logger.LogError("Error listing files: {Message}", ex.Message);
             }
         }
+        
+        /// <summary>
+        /// Returns true if the file should be ignored based on its name.
+        /// </summary>
+        private static bool ShouldIgnoreFile(string filePath)
+        {
+            var fileName = Path.GetFileName(filePath);
+            return IgnoredPrefixes.Any(prefix => fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                   || IgnoredSuffixes.Any(suffix => fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+        }
 
         private static void StartLocalFileWatcher()
         {
@@ -599,7 +722,7 @@ Available commands:
 
             watcher.Created += async (_, e) =>
             {
-                if (Path.GetFileName(e.FullPath).StartsWith("~$") || Path.GetFileName(e.FullPath).StartsWith("."))
+                if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
                     return; // Ignore temp files
                 await Task.Delay(500); // Prevent duplicate rapid events
                 Console.WriteLine($"[LOCAL] File created: {e.Name}");
@@ -608,8 +731,8 @@ Available commands:
 
             watcher.Changed += async (_, e) =>
             {
-                if (Path.GetFileName(e.FullPath).StartsWith("~$") || Path.GetFileName(e.FullPath).StartsWith("."))
-                    return;
+                if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
+                    return; // Ignore temp files
                 await Task.Delay(500); // Prevent multiple rapid events
                 Console.WriteLine($"[LOCAL] File changed: {e.Name}");
                 await SendNotificationAsync("modified", e.FullPath);
@@ -617,8 +740,8 @@ Available commands:
 
             watcher.Deleted += async (_, e) =>
             {
-                if (Path.GetFileName(e.FullPath).StartsWith("~$") || Path.GetFileName(e.FullPath).StartsWith("."))
-                    return;
+                if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
+                    return; // Ignore temp files
                 Console.WriteLine($"[LOCAL] File deleted: {e.Name}");
                 await SendNotificationAsync("deleted", e.FullPath, useFileTime: false);
             };
