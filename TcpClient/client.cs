@@ -8,7 +8,7 @@ namespace TcpServer
 {
     internal class WebSocketFileClient
     {
-        private const string ServerUrl = "ws://127.0.0.1:5678";
+        private const string ServerUrl = "wss://127.0.0.1:5678";
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
         private static ILogger<WebSocketFileClient> _logger = null!;
         private static ClientWebSocket? _notificationSocket;
@@ -143,6 +143,11 @@ Available commands:
                 try
                 {
                     _notificationSocket = new ClientWebSocket();
+
+                    // Allow self-signed SSL certificates
+                    _notificationSocket.Options.RemoteCertificateValidationCallback =
+                        (sender, cert, chain, sslPolicyErrors) => true;
+
                     await _notificationSocket.ConnectAsync(new Uri(ServerUrl), cancellationToken);
                     _logger.LogInformation($"[INFO] Connected to notification server {ServerUrl}.");
 
@@ -369,6 +374,11 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
+                // Allow self-signed SSL certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback =
+                    (sender, cert, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for upload.");
 
@@ -413,6 +423,11 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
+                // Allow self-signed SSL certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback =
+                    (sender, cert, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for download.");
 
@@ -479,6 +494,11 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
+                // Allow self-signed SSL certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback =
+                    (sender, cert, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for deletion request.");
 
@@ -527,6 +547,11 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
+                // Allow self-signed SSL certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback =
+                    (sender, cert, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for listing files.");
 
