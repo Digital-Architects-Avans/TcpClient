@@ -133,6 +133,23 @@ Available commands:
         }
         
         // FE10 sanitize and compatibility
+        private static string ProcessFileName(string fullPath, string originalFileName)
+        {
+            string sanitizedFileName = FileNameSanitizer.SanitizeFilename(originalFileName);
+
+            if (!string.Equals(originalFileName, sanitizedFileName, StringComparison.Ordinal))
+            {
+                string directory = Path.GetDirectoryName(fullPath);
+                string sanitizedFullPath = Path.Combine(directory, sanitizedFileName);
+
+                // Rename the file if its name has changed.
+                File.Move(fullPath, sanitizedFullPath);
+                return sanitizedFileName;
+            }
+
+            return originalFileName;
+        }
+        
         public static class FileNameSanitizer
         {
             public static string SanitizeFilename(string filename, int maxLength = 200, string targetCharset = "UTF-8")
@@ -633,49 +650,28 @@ Available commands:
 
             watcher.Created += async (_, e) =>
             {
-                // Sla tijdelijke of verborgen bestanden over.
                 string originalFileName = Path.GetFileName(e.FullPath);
                 if (originalFileName.StartsWith("~$") || originalFileName.StartsWith("."))
-                    return; 
-
-                await Task.Delay(500); 
-
-                string sanitizedFileName;
-                try
                 {
-                    sanitizedFileName = FileNameSanitizer.SanitizeFilename(originalFileName);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[LOCAL] Fout tijdens het sanitizen van de bestandsnaam: {ex.Message}");
                     return;
                 }
 
-                string directory = Path.GetDirectoryName(e.FullPath);
-                string sanitizedFullPath = Path.Combine(directory, sanitizedFileName);
+                // Delay to allow file operations to complete.
+                await Task.Delay(500);
 
-                if (!string.Equals(originalFileName, sanitizedFileName, StringComparison.Ordinal))
+                try
                 {
-                    try
-                    {
-                        File.Move(e.FullPath, sanitizedFullPath);
-                        Console.WriteLine($"[LOCAL] Bestand hernoemd van '{originalFileName}' naar '{sanitizedFileName}'.");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[LOCAL] Fout tijdens hernoemen: {ex.Message}");
-                        return;
-                    }
+                    string sanitizedFileName = ProcessFileName(e.FullPath, originalFileName);
+                    Console.WriteLine($"[LOCAL] File created: {sanitizedFileName}");
+                    await SendNotificationAsync("created", e.FullPath);
                 }
-                else
+                catch (Exception ex)
                 {
-                    // Indien de naam niet gewijzigd wordt, gebruik dan het originele pad.
-                    sanitizedFullPath = e.FullPath;
+                    Console.WriteLine($"[LOCAL] Error during file processing: {ex.Message}");
+                    throw;
                 }
-
-                Console.WriteLine($"[LOCAL] File created: {sanitizedFileName}");
-                await SendNotificationAsync("created", sanitizedFullPath);
             };
+
 
 
             watcher.Changed += async (_, e) =>
