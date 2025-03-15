@@ -484,6 +484,8 @@ Available commands:
                 _logger.LogError("Error handling notification: {Message}", ex.Message);
             }
         }
+        
+
 
         /// <summary>
         /// Uploads a file to the server using ClientWebSocket.
@@ -493,10 +495,10 @@ Available commands:
             // Create remote directory structure first
             string relativePath = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrEmpty(relativePath))
-            {
-                // Send directory creation notification/command
-                await SendNotificationAsync("CreateDirectory", relativePath, false);
-            }
+            // First create the directory itself
+            await SendNotificationAsync("CREATE_DIRECTORY", filePath, false);
+            
+        
 
             if (!File.Exists(filePath))
             {
@@ -609,6 +611,13 @@ Available commands:
         /// </summary>
         private static async Task DownloadFileAsync(string fileName)
         {
+            // Create local directory structure first
+            string directoryPath = Path.GetDirectoryName(fileName);
+            if (!string.IsNullOrEmpty(directoryPath))
+            {
+                Directory.CreateDirectory(Path.Combine(SyncFolder, directoryPath));
+            }
+            
             string tempFileName = fileName + PartialSuffix;
             var metadata = new { command = "DOWNLOAD", filename = fileName };
 
@@ -701,6 +710,19 @@ Available commands:
         /// </summary>
         private static async Task DeleteFileAsync(string fileName)
         {
+            
+            string fullPath = Path.Combine(SyncFolder, fileName);
+    
+            if (Directory.Exists(fullPath))
+            {
+                if (!Directory.EnumerateFileSystemEntries(fullPath).Any())
+                {
+                    Directory.Delete(fullPath);
+                    await SendNotificationAsync("DeleteDirectory", fileName, false);
+                }
+                return;
+            }
+            
             var metadata = new { command = "DELETE", filename = fileName };
 
             try
