@@ -716,7 +716,7 @@ Available commands:
             {
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
                 Filter = "*.*",
-                IncludeSubdirectories = false,
+                IncludeSubdirectories = true,
                 EnableRaisingEvents = true
             };
 
@@ -725,24 +725,45 @@ Available commands:
                 if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
                     return; // Ignore temp files
                 await Task.Delay(500); // Prevent duplicate rapid events
-                Console.WriteLine($"[LOCAL] File created: {e.Name}");
-                await SendNotificationAsync("created", e.FullPath);
+                
+                var relativePath = Path.GetRelativePath(SyncFolder, e.FullPath); // Get relative path
+                
+                if (Directory.Exists(e.FullPath)) // If it's a directory, send a notification
+                {
+                    Console.WriteLine($"[LOCAL] Directory created: {relativePath}");
+                    await SendNotificationAsync("directory_created", e.FullPath);
+                }
+                else // Otherwise, send a notification for the file
+                {
+                    Console.WriteLine($"[LOCAL] File created: {relativePath}");
+                    await SendNotificationAsync("created", e.FullPath);
+                }
+
             };
 
             watcher.Changed += async (_, e) =>
             {
                 if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
                     return; // Ignore temp files
+                if (Directory.Exists(e.FullPath))
+                    return; // Skip directory modification events
+
                 await Task.Delay(500); // Prevent multiple rapid events
-                Console.WriteLine($"[LOCAL] File changed: {e.Name}");
+                
+                var relativePath = Path.GetRelativePath(SyncFolder, e.FullPath);
+                
+                Console.WriteLine($"[LOCAL] File changed: {relativePath}");
                 await SendNotificationAsync("modified", e.FullPath);
+
             };
 
             watcher.Deleted += async (_, e) =>
             {
                 if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
                     return; // Ignore temp files
-                Console.WriteLine($"[LOCAL] File deleted: {e.Name}");
+                
+                var relativePath = Path.GetRelativePath(SyncFolder, e.FullPath);
+                Console.WriteLine($"[LOCAL] Item deleted: {relativePath}");
                 await SendNotificationAsync("deleted", e.FullPath, useFileTime: false);
             };
 
