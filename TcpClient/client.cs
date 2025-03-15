@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using System.Text.RegularExpressions;
+
 
 namespace TcpServer
 {
@@ -137,6 +139,80 @@ Available commands:
 /quit                  - Exit the application.
 ------------------------------------------------------");
         }
+        
+        // FE10 sanitize and compatibility
+        private static string ProcessFileName(string fullPath, string originalFileName)
+        {
+            string sanitizedFileName = FileNameSanitizer.SanitizeFilename(originalFileName);
+
+            if (!string.Equals(originalFileName, sanitizedFileName, StringComparison.Ordinal))
+            {
+                string directory = Path.GetDirectoryName(fullPath);
+                string sanitizedFullPath = Path.Combine(directory, sanitizedFileName);
+
+                // Rename the file if its name has changed.
+                File.Move(fullPath, sanitizedFullPath);
+                return sanitizedFileName;
+            }
+
+            return originalFileName;
+        }
+        
+        public static class FileNameSanitizer
+        {
+            public static string SanitizeFilename(string filename, int maxLength = 200, string targetCharset = "UTF-8")
+            {
+                // Empty file name check
+                if (string.IsNullOrWhiteSpace(filename))
+                {
+                    throw new ArgumentException("Filename cannot be null or empty.", nameof(filename));
+                }
+                
+                // Normalize Unicode NFC-format.
+                filename = filename.Normalize(NormalizationForm.FormC);
+
+                // Delete Unicode signs.
+                filename = Regex.Replace(filename, @"[<>:""/\\|?*\x00-\x1F;`&|$!'()]", "");
+                
+                if (targetCharset.Equals("ASCII", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Delete non-ASCII characters.
+                    var asciiBytes = Encoding.ASCII.GetBytes(filename);
+                    filename = Encoding.ASCII.GetString(asciiBytes);
+                }
+                // Trim leading and trailing spaces/dots.
+                filename = filename.Trim(' ', '.');
+                filename = filename.ToLowerInvariant();
+
+                // Choose encoding based on targetCharset.
+                Encoding encoding;
+                try
+                {
+                    encoding = Encoding.GetEncoding(targetCharset);
+                }
+                catch (Exception ex)
+                {
+                    throw new ArgumentException($"The provided target charset '{targetCharset}' is not valid.", nameof(targetCharset), ex);
+                }
+
+
+                // Check filename length
+                int byteLength = encoding.GetByteCount(filename);
+                if (byteLength > maxLength)
+                {
+                    throw new ArgumentException($"Filename exceeds the maximum length of {maxLength} bytes in {targetCharset} encoding.");
+                }
+
+                // Check if file name not empty after sanitization
+                if (string.IsNullOrEmpty(filename))
+                {
+                    throw new ArgumentException("Filename became empty after sanitization.");
+                }
+                
+                return filename;
+            }
+        }
+
 
         /// <summary>
         /// Starts a persistent ClientWebSocket connection to receive notifications from the server.
@@ -722,24 +798,41 @@ Available commands:
 
             watcher.Created += async (_, e) =>
             {
-                if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
-                    return; // Ignore temp files
-                await Task.Delay(500); // Prevent duplicate rapid events
-                
-                var relativePath = Path.GetRelativePath(SyncFolder, e.FullPath); // Get relative path
-                
-                if (Directory.Exists(e.FullPath)) // If it's a directory, send a notification
+                string originalFileName = Path.GetFileName(e.FullPath);
+                if (originalFileName.StartsWith("~$") || originalFileName.StartsWith("."))
                 {
-                    Console.WriteLine($"[LOCAL] Directory created: {relativePath}");
-                    await SendNotificationAsync("directory_created", e.FullPath);
-                }
-                else // Otherwise, send a notification for the file
-                {
-                    Console.WriteLine($"[LOCAL] File created: {relativePath}");
-                    await SendNotificationAsync("created", e.FullPath);
+                    return;
                 }
 
+                // Delay to allow file operations to complete
+                await Task.Delay(500);
+
+                try
+                {
+                    var relativePath = Path.GetRelativePath(SyncFolder, e.FullPath);
+
+                    if (Directory.Exists(e.FullPath))
+                    {
+                        string sanitizedDirName = ProcessFileName(e.FullPath, originalFileName);
+                        Console.WriteLine($"[LOCAL] Directory created: {sanitizedDirName}");
+                        await SendNotificationAsync("directory_created", e.FullPath);
+                    }
+                    else
+                    {
+                        string sanitizedFileName = ProcessFileName(e.FullPath, originalFileName);
+                        Console.WriteLine($"[LOCAL] File created: {sanitizedFileName}");
+                        await SendNotificationAsync("created", e.FullPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[LOCAL] Error during file processing: {ex.Message}");
+                    throw;
+                }
             };
+
+
+
 
             watcher.Changed += async (_, e) =>
             {
