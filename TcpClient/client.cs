@@ -143,19 +143,34 @@ Available commands:
         // FE10 sanitize and compatibility
         private static string ProcessFileName(string fullPath, string originalFileName)
         {
-            string sanitizedFileName = FileNameSanitizer.SanitizeFilename(originalFileName);
+            // Get relative paths and components
+            string directory = Path.GetDirectoryName(fullPath);
+            string fileNameOnly = Path.GetFileName(originalFileName);
+            string sanitizedFileName = FileNameSanitizer.SanitizeFilename(fileNameOnly);
 
-            if (!string.Equals(originalFileName, sanitizedFileName, StringComparison.Ordinal))
+            if (!string.Equals(fileNameOnly, sanitizedFileName, StringComparison.Ordinal))
             {
-                string directory = Path.GetDirectoryName(fullPath);
-                string sanitizedFullPath = Path.Combine(directory, sanitizedFileName);
+                // If directory exists, combine with sanitized filename
+                string sanitizedFullPath = directory != null 
+                    ? Path.Combine(directory, sanitizedFileName)
+                    : sanitizedFileName;
 
-                // Rename the file if its name has changed.
-                File.Move(fullPath, sanitizedFullPath);
-                return sanitizedFileName;
+                // Rename the file if its name has changed
+                if (File.Exists(fullPath))
+                {
+                    File.Move(fullPath, sanitizedFullPath);
+                }
+
+                // Return full relative path with sanitized filename
+                return directory != null 
+                    ? Path.Combine(Path.GetRelativePath(directory, directory), sanitizedFileName)
+                    : sanitizedFileName;
             }
 
-            return originalFileName;
+            // Return original path structure with original filename
+            return directory != null 
+                ? Path.Combine(Path.GetRelativePath(directory, directory), fileNameOnly)
+                : originalFileName;
         }
         
         public static class FileNameSanitizer
@@ -475,6 +490,14 @@ Available commands:
         /// </summary>
         private static async Task UploadFileAsync(string filePath)
         {
+            // Create remote directory structure first
+            string relativePath = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(relativePath))
+            {
+                // Send directory creation notification/command
+                await SendNotificationAsync("CreateDirectory", relativePath, false);
+            }
+
             if (!File.Exists(filePath))
             {
                 _logger.LogError("File '{FilePath}' does not exist.", filePath);
@@ -830,10 +853,7 @@ Available commands:
                     throw;
                 }
             };
-
-
-
-
+            
             watcher.Changed += async (_, e) =>
             {
                 if (ShouldIgnoreFile(Path.GetFullPath(e.FullPath)))
