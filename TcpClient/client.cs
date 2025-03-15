@@ -11,7 +11,7 @@ namespace TcpServer
     {
         private const string PartialSuffix = ".partial"; // .partial extension used during upload transaction
         private const int PartialFileTimeoutSeconds = 10*60; // Timeout value for partial files
-        private const string ServerUrl = "wss://127.0.0.1:5678";>>>>>>> master
+        private const string ServerUrl = "wss://127.0.0.1:5678";
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
         private static ILogger<WebSocketFileClient> _logger = null!;
         private static ClientWebSocket? _notificationSocket;
