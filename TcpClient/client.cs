@@ -9,7 +9,7 @@ namespace TcpServer
 {
     internal class WebSocketFileClient
     {
-        private const string ServerUrl = "ws://127.0.0.1:5678";
+        private const string ServerUrl = "wss://145.24.223.106:443";
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
         private static ILogger<WebSocketFileClient> _logger = null!;
         private static ClientWebSocket? _notificationSocket;
@@ -147,40 +147,57 @@ Available commands:
             {
                 try
                 {
+                    _logger.LogInformation($"[DEBUG] Attempting to connect to WebSocket server: {ServerUrl}");
+
                     _notificationSocket = new ClientWebSocket();
+                    // For testing: accept all certificates
+                    _notificationSocket.Options.RemoteCertificateValidationCallback = 
+                        (sender, certificate, chain, sslPolicyErrors) => true;
                     await _notificationSocket.ConnectAsync(new Uri(ServerUrl), cancellationToken);
-                    _logger.LogInformation($"[INFO] Connected to notification server {ServerUrl}.");
+
+                    _logger.LogInformation($"[INFO] Successfully connected to notification server {ServerUrl}.");
 
                     var buffer = new byte[8192];
 
                     while (_notificationSocket.State == WebSocketState.Open &&
                            !cancellationToken.IsCancellationRequested)
                     {
+                        _logger.LogDebug("[DEBUG] Waiting for messages from the WebSocket server...");
+
                         var result =
                             await _notificationSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
-                            _logger.LogWarning("[WARNING] Notification server closed the connection. Reconnecting...");
+                            _logger.LogWarning("[WARNING] WebSocket server closed the connection. Reconnecting...");
                             break; // Break out of loop to trigger reconnect
                         }
 
                         if (result.MessageType != WebSocketMessageType.Text) continue;
                         var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+
+                        _logger.LogInformation($"[INFO] Received message from server: {message}");
                         await HandleNotificationAsync(message);
                     }
                 }
+                catch (WebSocketException wsEx)
+                {
+                    _logger.LogError(
+                        $"[ERROR] WebSocketException in notification receiver: {wsEx.Message} | StackTrace: {wsEx.StackTrace}");
+                }
                 catch (Exception ex)
                 {
-                    _logger.LogError("Error in notification receiver: {Message}", ex.Message);
+                    _logger.LogError(
+                        $"[ERROR] General exception in notification receiver: {ex.Message} | StackTrace: {ex.StackTrace}");
                 }
-                // Exponential backoff to avoid frequent retries on failures
+
                 Console.WriteLine($"[INFO] Reconnecting in {retryDelay / 1000} seconds...");
                 await Task.Delay(retryDelay, cancellationToken);
-        
+
                 retryDelay = Math.Min(retryDelay * 2, 30000); // Max delay of 30 seconds
             }
         }
-        
+
         private static async Task<string?> ComputeFileHashAsync(string filePath)
         {
             try
@@ -220,13 +237,14 @@ Available commands:
                     return lastSent; // Keep existing timestamp
                 });
 
-            // **Ignore empty files to prevent premature uploads**
-            if (fileSize == 0)
+            // Only ignore empty files for created or modified events to prevent premature uploads
+            if ((eventType.Equals("created", StringComparison.OrdinalIgnoreCase) ||
+                 eventType.Equals("modified", StringComparison.OrdinalIgnoreCase)) && fileSize == 0)
             {
                 _logger.LogWarning($"Ignoring file '{filename}' because its size is 0 bytes.");
                 return;
             }
-            
+
             // Compute hash only for created or modified events and if file exists.
             string? fileHash = null;
             if ((eventType.Equals("created", StringComparison.OrdinalIgnoreCase) ||
@@ -262,7 +280,7 @@ Available commands:
                 filename = filename,
                 timestamp = timestamp,
                 size = fileSize,
-                hash = fileHash  // Will be null if not computed
+                hash = fileHash // Will be null if not computed
             };
 
             var json = JsonConvert.SerializeObject(notification);
@@ -285,6 +303,9 @@ Available commands:
                 }
 
                 _notificationSocket = new ClientWebSocket();
+                // For testing: accept all certificates
+                _notificationSocket.Options.RemoteCertificateValidationCallback = 
+                    (sender, certificate, chain, sslPolicyErrors) => true;
                 await _notificationSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Reconnected to notification server.");
             }
@@ -403,6 +424,9 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+                // For testing: accept all certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback = 
+                    (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for upload.");
 
@@ -447,6 +471,9 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+                // For testing: accept all certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback = 
+                    (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for download.");
 
@@ -513,6 +540,9 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+                // For testing: accept all certificates
+                clientWebSocket.Options.RemoteCertificateValidationCallback = 
+                    (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for deletion request.");
 
@@ -561,6 +591,8 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+                clientWebSocket.Options.RemoteCertificateValidationCallback = 
+                    (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for listing files.");
 
@@ -595,7 +627,7 @@ Available commands:
                 _logger.LogError("Error listing files: {Message}", ex.Message);
             }
         }
-        
+
         /// <summary>
         /// Returns true if the file should be ignored based on its name.
         /// </summary>
