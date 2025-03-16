@@ -10,12 +10,14 @@ namespace TcpServer
     internal class WebSocketFileClient
     {
         private const string ServerUrl = "wss://145.24.223.106:443";
+        private const string PartialSuffix = ".partial"; // .partial extension used during upload transaction
+        private const int PartialFileTimeoutSeconds = 10*60; // Timeout value for partial files
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
         private static ILogger<WebSocketFileClient> _logger = null!;
         private static ClientWebSocket? _notificationSocket;
         private static readonly ConcurrentDictionary<string, long> LastNotificationTimes = new();
         private static readonly string[] IgnoredPrefixes = ["~$", "."];
-        private static readonly string[] IgnoredSuffixes = [".swp", ".tmp", ".lock", ".part", ".crdownload", ".download", ".bak", ".old", ".temp", ".sha256"
+        private static readonly string[] IgnoredSuffixes = [".swp", ".tmp", ".lock", ".part", ".partial", ".crdownload", ".download", ".bak", ".old", ".temp", ".sha256"
         ];
 
 
@@ -26,6 +28,7 @@ namespace TcpServer
         {
             _logger = SetupLogging();
             Console.WriteLine("[INFO] Welcome to the WebSocket File Transfer Client!");
+            StartStaleFileCleanup();
             PrintHelp();
 
             if (!Directory.Exists(SyncFolder))
@@ -150,9 +153,11 @@ Available commands:
                     _logger.LogInformation($"[DEBUG] Attempting to connect to WebSocket server: {ServerUrl}");
 
                     _notificationSocket = new ClientWebSocket();
+
                     // For testing: accept all certificates
                     _notificationSocket.Options.RemoteCertificateValidationCallback = 
                         (sender, certificate, chain, sslPolicyErrors) => true;
+
                     await _notificationSocket.ConnectAsync(new Uri(ServerUrl), cancellationToken);
 
                     _logger.LogInformation($"[INFO] Successfully connected to notification server {ServerUrl}.");
@@ -424,9 +429,11 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
                 // For testing: accept all certificates
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for upload.");
 
@@ -460,20 +467,78 @@ Available commands:
                 _logger.LogError("Error uploading file: {Message}", ex.Message);
             }
         }
+        
+        // FE7
+        // Starts a background task for cleaning up stale .partial files, if any exist.
+        private static void StartStaleFileCleanup()
+        {
+            var partialFilesExist = Directory
+                .EnumerateFiles(SyncFolder)
+                .Any(f => f.EndsWith(PartialSuffix, StringComparison.OrdinalIgnoreCase));
+
+            if (partialFilesExist)
+            {
+                _logger.LogInformation("Stale partial file(s) detected. Starting cleanup task.");
+                _ = Task.Run(() => CleanStalePartialFilesAsync());
+            }
+            else
+            {
+                _logger.LogInformation("No partial files found. Cleanup task not needed.");
+            }
+        }
+        // Asynchronously waits for the timeout duration and then cleans up any stale .partial files.
+        private static async Task CleanStalePartialFilesAsync()
+        {
+            // Wait for the defined timeout period plus an extra second
+            await Task.Delay(TimeSpan.FromSeconds(PartialFileTimeoutSeconds + 1));
+
+            DateTime currentTime = DateTime.UtcNow;
+            try
+            {
+                var partialFiles = Directory
+                    .EnumerateFiles(SyncFolder)
+                    .Where(f => f.EndsWith(PartialSuffix, StringComparison.OrdinalIgnoreCase));
+
+                foreach (var file in partialFiles)
+                {
+                    var lastWriteTime = File.GetLastWriteTimeUtc(file);
+                    if ((currentTime - lastWriteTime).TotalSeconds > PartialFileTimeoutSeconds)
+                    {
+                        _logger.LogInformation("Deleting stale file: {FilePath}", file);
+                        try
+                        {
+                            File.Delete(file);
+                        }
+                        catch (Exception deleteEx)
+                        {
+                            _logger.LogError(deleteEx, "Unable to delete stale file: {FilePath}", file);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during stale partial files cleanup.");
+            }
+        }
+
 
         /// <summary>
         /// Downloads a file from the server using ClientWebSocket.
         /// </summary>
         private static async Task DownloadFileAsync(string fileName)
         {
+            string tempFileName = fileName + PartialSuffix;
             var metadata = new { command = "DOWNLOAD", filename = fileName };
 
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
                 // For testing: accept all certificates
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for download.");
 
@@ -483,7 +548,7 @@ Available commands:
                 await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
                     CancellationToken.None);
 
-                var filePath = Path.Combine(SyncFolder, fileName);
+                var filePath = Path.Combine(SyncFolder, tempFileName);
                 await using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write);
                 var buffer = new byte[8192];
                 var eofReceived = false;
@@ -517,6 +582,21 @@ Available commands:
                     }
                 }
 
+                try
+                {
+                    // After the download completes, rename the file removing the .partial suffix and move it to the SyncFolder.
+                    var newFilePath = Path.Combine(SyncFolder, fileName);
+                    File.Move(filePath, newFilePath);
+                    Console.WriteLine($"[INFO] File '{tempFileName}' converted to '{fileName}'.");
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e);
+                    throw;
+                }
+
+
+
                 Console.WriteLine(eofReceived
                     ? $"File '{fileName}' downloaded successfully."
                     : $"File '{fileName}' download incomplete.");
@@ -527,6 +607,11 @@ Available commands:
             catch (Exception ex)
             {
                 _logger.LogError("Error downloading file: {Message}", ex.Message);
+            }
+            finally
+            {
+                // Start the background cleanup of stale partial files.  
+                StartStaleFileCleanup();
             }
         }
 
@@ -540,9 +625,11 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
                 // For testing: accept all certificates
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for deletion request.");
 
@@ -591,8 +678,10 @@ Available commands:
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
+
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
+
                 await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for listing files.");
 
