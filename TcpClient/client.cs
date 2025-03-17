@@ -2,6 +2,7 @@
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 
@@ -9,7 +10,7 @@ namespace TcpServer
 {
     internal class WebSocketFileClient
     {
-        private const string ServerUrl = "wss://145.24.223.106:443";
+        private static string _serverUrl = string.Empty;
         private const string PartialSuffix = ".partial"; // .partial extension used during upload transaction
         private const int PartialFileTimeoutSeconds = 10*60; // Timeout value for partial files
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
@@ -26,6 +27,15 @@ namespace TcpServer
 
         private static async Task Main()
         {
+            // Build configuration from appSettings.json
+            var configuration = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appSettings.json", optional: false, reloadOnChange: true)
+                .Build();
+
+            // Read the server URL from configuration
+            _serverUrl = configuration["ServerUrl"] ?? throw new Exception("ServerUrl not configured.");
+            
             _logger = SetupLogging();
             Console.WriteLine("[INFO] Welcome to the WebSocket File Transfer Client!");
             StartStaleFileCleanup();
@@ -150,7 +160,7 @@ Available commands:
             {
                 try
                 {
-                    _logger.LogInformation($"[DEBUG] Attempting to connect to WebSocket server: {ServerUrl}");
+                    _logger.LogInformation($"[DEBUG] Attempting to connect to WebSocket server: {_serverUrl}");
 
                     _notificationSocket = new ClientWebSocket();
 
@@ -158,9 +168,9 @@ Available commands:
                     _notificationSocket.Options.RemoteCertificateValidationCallback = 
                         (sender, certificate, chain, sslPolicyErrors) => true;
 
-                    await _notificationSocket.ConnectAsync(new Uri(ServerUrl), cancellationToken);
+                    await _notificationSocket.ConnectAsync(new Uri(_serverUrl), cancellationToken);
 
-                    _logger.LogInformation($"[INFO] Successfully connected to notification server {ServerUrl}.");
+                    _logger.LogInformation($"[INFO] Successfully connected to notification server {_serverUrl}.");
 
                     var buffer = new byte[8192];
 
@@ -311,7 +321,7 @@ Available commands:
                 // For testing: accept all certificates
                 _notificationSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
-                await _notificationSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
+                await _notificationSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Reconnected to notification server.");
             }
             catch (Exception ex)
@@ -434,7 +444,7 @@ Available commands:
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
 
-                await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
+                await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for upload.");
 
                 // Send upload command
@@ -539,7 +549,7 @@ Available commands:
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
 
-                await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
+                await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for download.");
 
                 // Send download command
@@ -630,7 +640,7 @@ Available commands:
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
 
-                await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
+                await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for deletion request.");
 
                 // Send DELETE command
@@ -682,7 +692,7 @@ Available commands:
                 clientWebSocket.Options.RemoteCertificateValidationCallback = 
                     (sender, certificate, chain, sslPolicyErrors) => true;
 
-                await clientWebSocket.ConnectAsync(new Uri(ServerUrl), CancellationToken.None);
+                await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for listing files.");
 
                 var metadataJson = JsonConvert.SerializeObject(metadata);
