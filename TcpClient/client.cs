@@ -453,9 +453,31 @@ Available commands:
                 await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
                     CancellationToken.None);
 
-                // Open file and send its contents
-                await using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+                // Wait for potential server response (e.g., warning message)
                 var buffer = new byte[8192];
+                var result = await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                var responseMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                dynamic? response = JsonConvert.DeserializeObject(responseMessage);
+
+                if (response != null && response?.status == "WARNING")
+                {
+                    Console.WriteLine($"[SERVER WARNING] {response?.message}");
+                    // Prompt user for confirmation
+                    Console.Write("Override file? (Y/N): ");
+                    var userConfirmation = Console.ReadLine()?.Trim();
+                    // Send confirmation to server
+                    await clientWebSocket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(userConfirmation ?? "N")),
+                                                      WebSocketMessageType.Text, true, CancellationToken.None);
+                    if (!string.Equals(userConfirmation, "Y", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine("Upload canceled by user.");
+                        await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Upload canceled", CancellationToken.None);
+                        return;
+                    }
+                }
+
+                    // Open file and send its contents
+                    await using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
                 int bytesRead;
                 while ((bytesRead = await fileStream.ReadAsync(buffer)) > 0)
                 {
