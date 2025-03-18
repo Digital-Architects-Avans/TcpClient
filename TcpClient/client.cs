@@ -14,14 +14,18 @@ namespace TcpServer
         private const string PartialSuffix = ".partial";
         private const int PartialFileTimeoutSeconds = 10 * 60;
         private static readonly string SyncFolder = Path.Combine(Directory.GetCurrentDirectory(), "SyncedFiles");
+
         private static ILogger<WebSocketFileClient> _logger = null!;
+
         // Persistent notification socket – used only for receiving notifications.
         private static ClientWebSocket? _notificationSocket;
         private static readonly string[] IgnoredPrefixes = ["~$", "."];
+
         private static readonly string[] IgnoredSuffixes =
         [
             ".swp", ".tmp", ".lock", ".part", ".partial", ".crdownload", ".download", ".bak", ".old", ".temp", ".sha256"
         ];
+
         private static readonly ConcurrentDictionary<string, CancellationTokenSource> DebounceTokens = new();
         private static readonly ConcurrentDictionary<string, long> RecentDownloads = new();
         private static readonly ConcurrentDictionary<string, long> RecentUploads = new();
@@ -73,6 +77,7 @@ namespace TcpServer
                         Console.WriteLine("Usage: /upload <file_path>");
                         continue;
                     }
+
                     var filePath = parts[1].Trim().Trim('\'', '"');
                     var relativePath = Path.GetRelativePath(SyncFolder, filePath);
                     await UploadFileAsync(relativePath);
@@ -85,6 +90,7 @@ namespace TcpServer
                         Console.WriteLine("Usage: /download <file_name>");
                         continue;
                     }
+
                     var fileName = parts[1].Trim();
                     var relativePath = Path.GetRelativePath(SyncFolder, fileName);
                     await DownloadFileAsync(relativePath);
@@ -97,6 +103,7 @@ namespace TcpServer
                         Console.WriteLine("Usage: /delete <file_name>");
                         continue;
                     }
+
                     var fileName = parts[1].Trim();
                     var relativePath = Path.GetRelativePath(SyncFolder, fileName);
                     await DeleteFileAsync(relativePath);
@@ -177,19 +184,23 @@ Available commands:
                     // Immediately subscribe
                     var subscribeMsg = JsonConvert.SerializeObject(new { subscribe = true });
                     var subscribeBytes = Encoding.UTF8.GetBytes(subscribeMsg);
-                    await _notificationSocket.SendAsync(new ArraySegment<byte>(subscribeBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                    await _notificationSocket.SendAsync(new ArraySegment<byte>(subscribeBytes),
+                        WebSocketMessageType.Text, true, CancellationToken.None);
 
                     _logger.LogInformation($"[INFO] Notification connection established to {_serverUrl}.");
                     var buffer = new byte[8192];
-                    while (_notificationSocket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+                    while (_notificationSocket.State == WebSocketState.Open &&
+                           !cancellationToken.IsCancellationRequested)
                     {
                         _logger.LogDebug("[DEBUG] Waiting for notification message...");
-                        var result = await _notificationSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+                        var result =
+                            await _notificationSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
                             _logger.LogWarning("[WARNING] Notification socket closed. Reconnecting...");
                             break;
                         }
+
                         if (result.MessageType != WebSocketMessageType.Text) continue;
                         var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
                         _logger.LogInformation($"[INFO] Received notification: {message}");
@@ -200,6 +211,7 @@ Available commands:
                 {
                     _logger.LogError($"[ERROR] Notification receiver exception: {ex.Message}");
                 }
+
                 Console.WriteLine($"[INFO] Reconnecting notification socket in {retryDelay / 1000} seconds...");
                 await Task.Delay(retryDelay, cancellationToken);
                 retryDelay = Math.Min(retryDelay * 2, 30000);
@@ -235,6 +247,7 @@ Available commands:
                 _logger.LogInformation($"[INFO] Skipping notification for directory '{relativePath}'.");
                 return;
             }
+
             if (eventType.Equals("deleted", StringComparison.OrdinalIgnoreCase) && LooksLikeDirectory(relativePath))
             {
                 _logger.LogInformation($"[INFO] Skipping deletion notification for directory '{relativePath}'.");
@@ -246,9 +259,11 @@ Available commands:
                 _logger.LogWarning($"[WARNING] Notification socket closed. Reconnecting...");
                 await ReconnectNotificationSocketAsync();
             }
+
             if (_notificationSocket == null || _notificationSocket.State != WebSocketState.Open)
             {
-                _logger.LogError($"[ERROR] Notification socket still closed. Not sending notification for '{relativePath}'.");
+                _logger.LogError(
+                    $"[ERROR] Notification socket still closed. Not sending notification for '{relativePath}'.");
                 return;
             }
 
@@ -285,11 +300,13 @@ Available commands:
             try
             {
                 _logger.LogInformation($"[INFO] Sending notification for '{relativePath}' ({eventType}) to server.");
-                await _notificationSocket.SendAsync(new ArraySegment<byte>(jsonBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await _notificationSocket.SendAsync(new ArraySegment<byte>(jsonBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
             }
             catch (WebSocketException ex)
             {
-                _logger.LogError($"[ERROR] WebSocketException while sending notification for '{relativePath}': {ex.Message}");
+                _logger.LogError(
+                    $"[ERROR] WebSocketException while sending notification for '{relativePath}': {ex.Message}");
                 await ReconnectNotificationSocketAsync();
             }
             catch (Exception ex)
@@ -307,6 +324,7 @@ Available commands:
                     _logger.LogWarning("Closing existing notification socket...");
                     _notificationSocket.Dispose();
                 }
+
                 _notificationSocket = new ClientWebSocket();
                 _notificationSocket.Options.RemoteCertificateValidationCallback =
                     (sender, certificate, chain, sslPolicyErrors) => true;
@@ -314,7 +332,8 @@ Available commands:
                 // Immediately subscribe again.
                 var subscribeMsg = JsonConvert.SerializeObject(new { subscribe = true });
                 var subscribeBytes = Encoding.UTF8.GetBytes(subscribeMsg);
-                await _notificationSocket.SendAsync(new ArraySegment<byte>(subscribeBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await _notificationSocket.SendAsync(new ArraySegment<byte>(subscribeBytes), WebSocketMessageType.Text,
+                    true, CancellationToken.None);
                 Console.WriteLine("[INFO] Reconnected to notification server.");
             }
             catch (Exception ex)
@@ -326,13 +345,20 @@ Available commands:
         /// <summary>
         /// Processes messages from the server.
         /// </summary>
-         private static async Task HandleNotificationAsync(string message)
+        private static async Task HandleNotificationAsync(string message)
         {
             try
             {
                 var jsonObj = JsonConvert.DeserializeObject<dynamic>(message);
                 if (jsonObj == null)
                     return;
+
+                string file = jsonObj.filename.ToString();
+                if (ShouldIgnoreFile(file))
+                {
+                    Console.WriteLine($"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
+                    return;
+                }
 
                 // Handle a "REQUEST_UPLOAD" command from the server.
                 if (jsonObj.command != null && jsonObj.command == "REQUEST_UPLOAD")
@@ -346,16 +372,19 @@ Available commands:
                             var secondsSinceDownload = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastDownloadTime;
                             if (secondsSinceDownload < UploadCooldownSeconds)
                             {
-                                Console.WriteLine($"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
+                                Console.WriteLine(
+                                    $"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
                                 return;
                             }
                         }
+
                         await UploadFileAsync(relativePath);
                     }
                     else
                     {
                         Console.WriteLine($"[INFO] File '{relativePath}' does not exist locally, skipping upload.");
                     }
+
                     return;
                 }
 
@@ -366,10 +395,11 @@ Available commands:
                     var filename = jsonObj.filename.ToString();
                     var serverTimestamp = (long)jsonObj.timestamp;
                     var serverFileSize = (long)jsonObj.size;
-                    Console.WriteLine($"[SERVER NOTIFICATION] File '{filename}' {eventType} at {serverTimestamp} (size: {serverFileSize} bytes).");
+                    Console.WriteLine(
+                        $"[SERVER NOTIFICATION] File '{filename}' {eventType} at {serverTimestamp} (size: {serverFileSize} bytes).");
 
                     var localFilePath = Path.Combine(SyncFolder, filename);
-                    bool shouldDownload = false;
+                    var shouldDownload = false;
 
                     // Ensure the directory exists.
                     var localDirectory = Path.GetDirectoryName(localFilePath);
@@ -393,19 +423,9 @@ Available commands:
                     }
                     else
                     {
-                        var localModifiedTime = new DateTimeOffset(File.GetLastWriteTimeUtc(localFilePath)).ToUnixTimeSeconds();
+                        var localModifiedTime =
+                            new DateTimeOffset(File.GetLastWriteTimeUtc(localFilePath)).ToUnixTimeSeconds();
                         var localFileSize = new FileInfo(localFilePath).Length;
-
-                        // Before comparing, check if the file was recently uploaded by us.
-                        if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
-                        {
-                            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
-                            if (elapsed < 20)  // 5 seconds threshold
-                            {
-                                Console.WriteLine($"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
-                                return;
-                            }
-                        }
 
                         if (serverTimestamp > localModifiedTime || serverFileSize != localFileSize)
                         {
@@ -416,6 +436,18 @@ Available commands:
 
                     if ((eventType == "created" || eventType == "modified") && shouldDownload)
                     {
+                        // Before comparing, check if the file was recently uploaded by us.
+                        if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
+                        {
+                            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
+                            if (elapsed < 20) // threshold (e.g. 20 seconden)
+                            {
+                                Console.WriteLine(
+                                    $"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
+                                return;
+                            }
+                        }
+                        
                         await DownloadFileAsync(filename);
                         RecentDownloads[filename] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                     }
@@ -438,6 +470,7 @@ Available commands:
                 _logger.LogError("File '{FilePath}' does not exist.", filePath);
                 return;
             }
+
             var metadata = new { command = "UPLOAD", filename = relativePath };
             try
             {
@@ -448,19 +481,24 @@ Available commands:
                 Console.WriteLine("[INFO] Connected to server for upload.");
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
                 await using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
                 var buffer = new byte[8192];
                 int bytesRead;
                 while ((bytesRead = await fileStream.ReadAsync(buffer)) > 0)
                 {
-                    await clientWebSocket.SendAsync(new ArraySegment<byte>(buffer, 0, bytesRead), WebSocketMessageType.Binary, true, CancellationToken.None);
+                    await clientWebSocket.SendAsync(new ArraySegment<byte>(buffer, 0, bytesRead),
+                        WebSocketMessageType.Binary, true, CancellationToken.None);
                 }
+
                 var eofBytes = Encoding.UTF8.GetBytes("EOF");
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(eofBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(eofBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
                 Console.WriteLine($"[INFO] File '{relativePath}' uploaded successfully.");
-                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Upload complete", CancellationToken.None);
-                
+                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Upload complete",
+                    CancellationToken.None);
+
                 // Record the upload time so subsequent notifications are ignored.
                 RecentUploads[relativePath] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             }
@@ -532,7 +570,8 @@ Available commands:
                 Console.WriteLine("[INFO] Connected to server for download.");
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
                 var tempFilePath = Path.Combine(SyncFolder, tempFileName);
                 var newFilePath = Path.Combine(SyncFolder, relativePath);
                 var fileDirectory = Path.GetDirectoryName(newFilePath);
@@ -540,12 +579,14 @@ Available commands:
                 {
                     Directory.CreateDirectory(fileDirectory);
                 }
+
                 await using var fileStream = new FileStream(tempFilePath, FileMode.Create, FileAccess.Write);
                 var buffer = new byte[8192];
                 bool eofReceived = false;
                 while (clientWebSocket.State == WebSocketState.Open && !eofReceived)
                 {
-                    var result = await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    var result =
+                        await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
                         var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
@@ -558,9 +599,11 @@ Available commands:
                         await fileStream.WriteAsync(buffer.AsMemory(0, result.Count));
                     }
                 }
+
                 File.Move(tempFilePath, newFilePath);
                 Console.WriteLine($"[INFO] File '{relativePath}' downloaded successfully.");
-                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Download complete", CancellationToken.None);
+                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Download complete",
+                    CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -587,7 +630,8 @@ Available commands:
                 Console.WriteLine("[INFO] Connected to server for deletion request.");
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
                 var buffer = new byte[8192];
                 var result = await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
                 var responseText = Encoding.UTF8.GetString(buffer, 0, result.Count);
@@ -605,7 +649,9 @@ Available commands:
                 {
                     Console.WriteLine($"[INFO] Server response: {response?.message}");
                 }
-                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Delete complete", CancellationToken.None);
+
+                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Delete complete",
+                    CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -628,7 +674,8 @@ Available commands:
                 Console.WriteLine("[INFO] Connected to server for listing files.");
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
                 var buffer = new byte[8192];
                 var result = await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
                 var responseText = Encoding.UTF8.GetString(buffer, 0, result.Count);
@@ -645,7 +692,9 @@ Available commands:
                 {
                     Console.WriteLine("[INFO] No files found on server.");
                 }
-                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "List complete", CancellationToken.None);
+
+                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "List complete",
+                    CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -663,6 +712,7 @@ Available commands:
                 existingCts.Cancel();
                 existingCts.Dispose();
             }
+
             var cts = new CancellationTokenSource();
             DebounceTokens[relativePath] = cts;
             Task.Run(async () =>
@@ -674,7 +724,9 @@ Available commands:
                     Console.WriteLine($"[LOCAL] {eventType}: {relativePath}");
                     await SendNotificationAsync(eventType, relativePath);
                 }
-                catch (TaskCanceledException) { }
+                catch (TaskCanceledException)
+                {
+                }
                 finally
                 {
                     DebounceTokens.TryRemove(relativePath, out _);
@@ -685,11 +737,26 @@ Available commands:
         /// <summary>
         /// Returns true if the file should be ignored.
         /// </summary>
-        private static bool ShouldIgnoreFile(string filePath)
+        private static bool ShouldIgnoreFile(string path)
         {
-            var fileName = Path.GetFileName(filePath);
-            return IgnoredPrefixes.Any(prefix => fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) ||
-                   IgnoredSuffixes.Any(suffix => fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+            // Get the file name from the path.
+            var fileName = Path.GetFileName(path);
+
+            // Check if the file name starts with any ignored prefix.
+            if (IgnoredPrefixes.Any(prefix => fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            // Check if the file name ends with any ignored suffix.
+            if (IgnoredSuffixes.Any(suffix => fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            // If the path exists and is a directory, ignore it.
+            if (Directory.Exists(path))
+                return true;
+
+            // If the file does not exist, we can use a heuristic:
+            // Assume that if the file name does not have an extension, it is likely a directory.
+            return !Path.HasExtension(fileName);
         }
 
         /// <summary>
