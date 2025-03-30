@@ -43,7 +43,7 @@ namespace TcpServer
             _serverUrl = configuration["ServerUrl"] ?? throw new Exception("ServerUrl not configured.");
             _logger = SetupLogging();
             Console.WriteLine("[INFO] Welcome to the WebSocket File Transfer Client!");
-            
+
             if (!Directory.Exists(SyncFolder))
                 Directory.CreateDirectory(SyncFolder);
             StartStaleFileCleanup();
@@ -188,6 +188,13 @@ Available commands:
                         WebSocketMessageType.Text, true, CancellationToken.None);
 
                     _logger.LogInformation($"[INFO] Notification connection established to {_serverUrl}.");
+                    
+                    var syncRequest = JsonConvert.SerializeObject(new { command = "SYNC" });
+                    var syncBytes = Encoding.UTF8.GetBytes(syncRequest);
+                    await _notificationSocket.SendAsync(new ArraySegment<byte>(syncBytes), WebSocketMessageType.Text, true, cancellationToken);
+                    
+                    _logger.LogInformation("[INFO] Synchronization request sent to server.");
+                    
                     var buffer = new byte[8192];
                     while (_notificationSocket.State == WebSocketState.Open &&
                            !cancellationToken.IsCancellationRequested)
@@ -299,7 +306,8 @@ Available commands:
             var jsonBytes = Encoding.UTF8.GetBytes(json);
             try
             {
-                _logger.LogInformation($"[INFO] Sending notification for '{relativePath}' ({eventType}) to server: {json}");
+                _logger.LogInformation(
+                    $"[INFO] Sending notification for '{relativePath}' ({eventType}) to server: {json}");
                 await _notificationSocket.SendAsync(new ArraySegment<byte>(jsonBytes), WebSocketMessageType.Text, true,
                     CancellationToken.None);
             }
@@ -345,138 +353,178 @@ Available commands:
         /// <summary>
         /// Processes messages from the server.
         /// </summary>
-private static async Task HandleNotificationAsync(string message)
-{
-    try
-    {
-        var jsonObj = JsonConvert.DeserializeObject<dynamic>(message);
-        if (jsonObj == null)
-            return;
-
-        string file = jsonObj.filename.ToString();
-        if (ShouldIgnoreFile(file))
+        private static async Task HandleNotificationAsync(string message)
         {
-            Console.WriteLine($"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
-            return;
-        }
-
-        // Handle upload request
-        if (jsonObj.command != null && jsonObj.command == "REQUEST_UPLOAD")
-        {
-            string relativePath = jsonObj.filename;
-            Console.WriteLine($"[SERVER REQUEST] Upload requested for: {relativePath}");
-            var fullPath = Path.Combine(SyncFolder, relativePath);
-
-            if (File.Exists(fullPath))
+            try
             {
-                if (RecentDownloads.TryGetValue(relativePath, out var lastDownloadTime))
+                var jsonObj = JsonConvert.DeserializeObject<dynamic>(message);
+                if (jsonObj == null)
+                    return;
+
+                string file = jsonObj.filename.ToString();
+                if (ShouldIgnoreFile(file))
                 {
-                    var secondsSinceDownload = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastDownloadTime;
-                    if (secondsSinceDownload < UploadCooldownSeconds)
+                    Console.WriteLine(
+                        $"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
+                    return;
+                }
+                
+                // Handle sync request
+                if (jsonObj.command != null && jsonObj.command == "SYNC_DATA")
+                {
+                    var fileList = jsonObj.files;
+                    foreach (var syncFile in fileList)
                     {
-                        Console.WriteLine($"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
-                        return;
+                        var filename = syncFile.filename.ToString();
+                        var serverTimestamp = (long)syncFile.timestamp;
+                        var serverSize = (long)syncFile.size;
+                        var serverHash = syncFile.hash?.ToString() ?? "";
+
+                        var localPath = Path.Combine(SyncFolder, filename);
+                        if (!File.Exists(localPath))
+                        {
+                            Console.WriteLine($"[SYNC] File '{filename}' missing locally. Requesting download.");
+                            await DownloadFileAsync(filename);
+                            continue;
+                        }
+
+                        var localSize = new FileInfo(localPath).Length;
+                        var localTimestamp = new DateTimeOffset(File.GetLastWriteTimeUtc(localPath)).ToUnixTimeSeconds();
+                        var localHash = await ComputeFileHashAsync(localPath);
+
+                        if (string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase) &&
+                            serverTimestamp <= localTimestamp && serverSize == localSize) continue;
+                        Console.WriteLine($"[SYNC] File '{filename}' out of date. Downloading...");
+                        await DownloadFileAsync(filename);
                     }
-                }
 
-                await UploadFileAsync(relativePath);
-            }
-            else
-            {
-                Console.WriteLine($"[INFO] File '{relativePath}' does not exist locally, skipping upload.");
-            }
-
-            return;
-        }
-
-        // Handle change notification
-        if (jsonObj.@event != null)
-        {
-            var eventType = jsonObj.@event.ToString();
-            var filename = jsonObj.filename.ToString();
-            var serverTimestamp = (long)jsonObj.timestamp;
-            var serverFileSize = (long)jsonObj.size;
-            var serverHash = jsonObj.hash?.ToString();
-            var localFilePath = Path.Combine(SyncFolder, filename);
-
-            Console.WriteLine($"[SERVER NOTIFICATION] File '{filename}' {eventType} at {serverTimestamp} (size: {serverFileSize} bytes).");
-
-            // Deleted file handling
-            if (eventType == "deleted")
-            {
-                if (File.Exists(localFilePath))
-                {
-                    File.Delete(localFilePath);
-                    Console.WriteLine($"[INFO] File '{filename}' was deleted remotely. Deleted it locally.");
-                }
-                else
-                {
-                    Console.WriteLine($"[INFO] File '{filename}' was already deleted locally. No action needed.");
-                }
-                return;
-            }
-
-            // Created or Modified handling
-            if (eventType == "created" || eventType == "modified")
-            {
-                // Ensure directory exists
-                var dir = Path.GetDirectoryName(localFilePath);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-
-                // If the file doesn't exist at all
-                if (!File.Exists(localFilePath))
-                {
-                    Console.WriteLine($"[INFO] File '{filename}' does not exist locally. Downloading...");
-                    await DownloadFileAsync(filename);
-                    RecentDownloads[filename] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                     return;
                 }
 
-                // Prevent redundant re-downloads for recent uploads
-                if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
+                // Handle upload request
+                if (jsonObj.command != null && jsonObj.command == "REQUEST_UPLOAD")
                 {
-                    var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
-                    if (elapsed < 20)
+                    string relativePath = jsonObj.filename;
+                    Console.WriteLine($"[SERVER REQUEST] Upload requested for: {relativePath}");
+                    var fullPath = Path.Combine(SyncFolder, relativePath);
+
+                    if (File.Exists(fullPath))
                     {
-                        Console.WriteLine($"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
+                        if (RecentDownloads.TryGetValue(relativePath, out var lastDownloadTime))
+                        {
+                            var secondsSinceDownload = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastDownloadTime;
+                            if (secondsSinceDownload < UploadCooldownSeconds)
+                            {
+                                Console.WriteLine(
+                                    $"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
+                                return;
+                            }
+                        }
+
+                        await UploadFileAsync(relativePath);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[INFO] File '{relativePath}' does not exist locally, skipping upload.");
+                    }
+
+                    return;
+                }
+
+                // Handle change notification
+                if (jsonObj.@event != null)
+                {
+                    var eventType = jsonObj.@event.ToString();
+                    var filename = jsonObj.filename.ToString();
+                    var serverTimestamp = (long)jsonObj.timestamp;
+                    var serverFileSize = (long)jsonObj.size;
+                    var serverHash = jsonObj.hash?.ToString();
+                    var localFilePath = Path.Combine(SyncFolder, filename);
+
+                    Console.WriteLine(
+                        $"[SERVER NOTIFICATION] File '{filename}' {eventType} at {serverTimestamp} (size: {serverFileSize} bytes).");
+
+                    // Deleted file handling
+                    if (eventType == "deleted")
+                    {
+                        if (File.Exists(localFilePath))
+                        {
+                            File.Delete(localFilePath);
+                            Console.WriteLine($"[INFO] File '{filename}' was deleted remotely. Deleted it locally.");
+                        }
+                        else
+                        {
+                            Console.WriteLine(
+                                $"[INFO] File '{filename}' was already deleted locally. No action needed.");
+                        }
+
                         return;
                     }
-                }
 
-                // Hash check
-                if (!string.IsNullOrEmpty(serverHash))
-                {
-                    var localHash = await ComputeFileHashAsync(localFilePath);
-                    if (serverHash?.Equals(localHash, StringComparison.OrdinalIgnoreCase))
+                    // Created or Modified handling
+                    if (eventType == "created" || eventType == "modified")
                     {
-                        Console.WriteLine($"[INFO] Local hash matches server for '{filename}'; skipping download.");
-                        return;
+                        // Ensure directory exists
+                        var dir = Path.GetDirectoryName(localFilePath);
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                            Directory.CreateDirectory(dir);
+
+                        // If the file doesn't exist at all
+                        if (!File.Exists(localFilePath))
+                        {
+                            Console.WriteLine($"[INFO] File '{filename}' does not exist locally. Downloading...");
+                            await DownloadFileAsync(filename);
+                            RecentDownloads[filename] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                            return;
+                        }
+
+                        // Prevent redundant re-downloads for recent uploads
+                        if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
+                        {
+                            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
+                            if (elapsed < 20)
+                            {
+                                Console.WriteLine(
+                                    $"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
+                                return;
+                            }
+                        }
+
+                        // Hash check
+                        if (!string.IsNullOrEmpty(serverHash))
+                        {
+                            var localHash = await ComputeFileHashAsync(localFilePath);
+                            if (serverHash?.Equals(localHash, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Console.WriteLine(
+                                    $"[INFO] Local hash matches server for '{filename}'; skipping download.");
+                                return;
+                            }
+                        }
+
+                        // Fallback: timestamp or filesize mismatch
+                        var localModifiedTime =
+                            new DateTimeOffset(File.GetLastWriteTimeUtc(localFilePath)).ToUnixTimeSeconds();
+                        var localFileSize = new FileInfo(localFilePath).Length;
+
+                        if (serverTimestamp > localModifiedTime || serverFileSize != localFileSize)
+                        {
+                            Console.WriteLine($"[INFO] Difference detected for '{filename}'; downloading...");
+                            await DownloadFileAsync(filename);
+                            RecentDownloads[filename] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[INFO] No significant difference for '{filename}', skipping download.");
+                        }
                     }
-                }
-
-                // Fallback: timestamp or filesize mismatch
-                var localModifiedTime = new DateTimeOffset(File.GetLastWriteTimeUtc(localFilePath)).ToUnixTimeSeconds();
-                var localFileSize = new FileInfo(localFilePath).Length;
-
-                if (serverTimestamp > localModifiedTime || serverFileSize != localFileSize)
-                {
-                    Console.WriteLine($"[INFO] Difference detected for '{filename}'; downloading...");
-                    await DownloadFileAsync(filename);
-                    RecentDownloads[filename] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                }
-                else
-                {
-                    Console.WriteLine($"[INFO] No significant difference for '{filename}', skipping download.");
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError("Error handling notification: {Message}", ex.Message);
+            }
         }
-    }
-    catch (Exception ex)
-    {
-        _logger.LogError("Error handling notification: {Message}", ex.Message);
-    }
-}
 
         /// <summary>
         /// Uploads a file using a transient WebSocket connection.
@@ -613,18 +661,20 @@ private static async Task HandleNotificationAsync(string message)
                         eofReceived = true;
                         break;
                     }
+
                     if (result.MessageType == WebSocketMessageType.Binary)
                     {
                         await fileStream.WriteAsync(buffer.AsMemory(0, result.Count));
                     }
                 }
-                
+
                 if (File.Exists(newFilePath))
                 {
                     File.Delete(newFilePath);
                 }
+
                 File.Move(tempFilePath, newFilePath);
-                
+
                 Console.WriteLine($"[INFO] File '{relativePath}' downloaded successfully.");
                 await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Download complete",
                     CancellationToken.None);
