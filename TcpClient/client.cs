@@ -366,22 +366,14 @@ Available commands:
                 var jsonObj = JsonConvert.DeserializeObject<dynamic>(message);
                 if (jsonObj == null)
                     return;
-
-                string file = jsonObj.filename.ToString();
-                if (ShouldIgnoreFile(file))
-                {
-                    Console.WriteLine(
-                        $"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
-                    return;
-                }
-
+                
                 // Handle sync request
                 if (jsonObj.command != null && jsonObj.command == "SYNC_DATA")
                 {
                     await HandleServerSyncData(jsonObj);
                     return;
                 }
-
+                
                 // Handle upload request
                 if (jsonObj.command != null && jsonObj.command == "REQUEST_UPLOAD")
                 {
@@ -409,6 +401,18 @@ Available commands:
                         Console.WriteLine($"[INFO] File '{relativePath}' does not exist locally, skipping upload.");
                     }
 
+                    return;
+                }
+                
+                // Handle file-based notifications
+                if (jsonObj.filename == null || jsonObj.@event == null)
+                    return;
+
+                string file = jsonObj.filename.ToString();
+                if (ShouldIgnoreFile(file))
+                {
+                    Console.WriteLine(
+                        $"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
                     return;
                 }
 
