@@ -19,7 +19,7 @@ namespace TcpServer
 
         // Persistent notification socket – used only for receiving notifications.
         private static ClientWebSocket? _notificationSocket;
-        private static readonly string[] IgnoredPrefixes = ["~$", "."];
+        private static readonly string[] IgnoredPrefixes = ["~$", ".", ".sb-"];
 
         private static readonly string[] IgnoredSuffixes =
         [
@@ -911,6 +911,16 @@ Available commands:
         {
             // Get the file name from the path.
             var fileName = Path.GetFileName(path);
+            
+            // Ignore if we just downloaded it to prevent deleting files after sync.
+            if (RecentDownloads.TryGetValue(path.Replace('\\', '/'), out var timestamp))
+            {
+                var age = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - timestamp;
+                if (age < 5)
+                {
+                    return true;
+                }
+            }
 
             // Check if the file name starts with any ignored prefix.
             if (IgnoredPrefixes.Any(prefix => fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
