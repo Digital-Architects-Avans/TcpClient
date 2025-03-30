@@ -43,11 +43,11 @@ namespace TcpServer
             _serverUrl = configuration["ServerUrl"] ?? throw new Exception("ServerUrl not configured.");
             _logger = SetupLogging();
             Console.WriteLine("[INFO] Welcome to the WebSocket File Transfer Client!");
-            StartStaleFileCleanup();
-            PrintHelp();
-
+            
             if (!Directory.Exists(SyncFolder))
                 Directory.CreateDirectory(SyncFolder);
+            StartStaleFileCleanup();
+            PrintHelp();
 
             // Start the persistent notification receiver.
             _notificationCts = new CancellationTokenSource();
