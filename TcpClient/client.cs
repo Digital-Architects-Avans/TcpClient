@@ -299,7 +299,7 @@ Available commands:
             var jsonBytes = Encoding.UTF8.GetBytes(json);
             try
             {
-                _logger.LogInformation($"[INFO] Sending notification for '{relativePath}' ({eventType}) to server.");
+                _logger.LogInformation($"[INFO] Sending notification for '{relativePath}' ({eventType}) to server: {json}");
                 await _notificationSocket.SendAsync(new ArraySegment<byte>(jsonBytes), WebSocketMessageType.Text, true,
                     CancellationToken.None);
             }
