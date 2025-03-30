@@ -395,6 +395,7 @@ Available commands:
                     var filename = jsonObj.filename.ToString();
                     var serverTimestamp = (long)jsonObj.timestamp;
                     var serverFileSize = (long)jsonObj.size;
+                    var serverHash = jsonObj.hash?.ToString();
                     Console.WriteLine(
                         $"[SERVER NOTIFICATION] File '{filename}' {eventType} at {serverTimestamp} (size: {serverFileSize} bytes).");
 
@@ -423,42 +424,45 @@ Available commands:
                     }
                     else
                     {
-                        var localModifiedTime =
-                            new DateTimeOffset(File.GetLastWriteTimeUtc(localFilePath)).ToUnixTimeSeconds();
+                        var localModifiedTime = new DateTimeOffset(File.GetLastWriteTimeUtc(localFilePath)).ToUnixTimeSeconds();
                         var localFileSize = new FileInfo(localFilePath).Length;
 
+                        // Check for recent upload first
+                        if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
+                        {
+                            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
+                            if (elapsed < 20)
+                            {
+                                Console.WriteLine($"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
+                                return;
+                            }
+                        }
+
+                        // Compare file hashes
+                        if (!string.IsNullOrEmpty(serverHash))
+                        {
+                            var localHash = await ComputeFileHashAsync(localFilePath);
+                            if (serverHash.Equals(localHash, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Console.WriteLine($"[INFO] Local hash matches server for '{filename}'; skipping download.");
+                                return;
+                            }
+                        }
+
+                        // Fallback: timestamp or size mismatch
                         if (serverTimestamp > localModifiedTime || serverFileSize != localFileSize)
                         {
-                            // Check if we recently uploaded this file — skip redundant download
-                            if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
-                            {
-                                var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
-                                if (elapsed < 20) // threshold to ignore redundant notifications
-                                {
-                                    Console.WriteLine($"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
-                                    return;
-                                }
-                            }
-
-                            Console.WriteLine($"[INFO] Newer version of '{filename}' detected. Downloading...");
+                            Console.WriteLine($"[INFO] Difference detected for '{filename}'; scheduling download.");
                             shouldDownload = true;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[INFO] No difference detected in '{filename}', skipping.");
                         }
                     }
 
                     if ((eventType == "created" || eventType == "modified") && shouldDownload)
                     {
-                        // Before comparing, check if the file was recently uploaded by us.
-                        if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
-                        {
-                            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
-                            if (elapsed < 20) // threshold (e.g. 20 seconden)
-                            {
-                                Console.WriteLine(
-                                    $"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
-                                return;
-                            }
-                        }
-                        
                         await DownloadFileAsync(filename);
                         RecentDownloads[filename] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                     }
@@ -605,13 +609,18 @@ Available commands:
                         eofReceived = true;
                         break;
                     }
-                    else if (result.MessageType == WebSocketMessageType.Binary)
+                    if (result.MessageType == WebSocketMessageType.Binary)
                     {
                         await fileStream.WriteAsync(buffer.AsMemory(0, result.Count));
                     }
                 }
-
+                
+                if (File.Exists(newFilePath))
+                {
+                    File.Delete(newFilePath);
+                }
                 File.Move(tempFilePath, newFilePath);
+                
                 Console.WriteLine($"[INFO] File '{relativePath}' downloaded successfully.");
                 await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Download complete",
                     CancellationToken.None);
