@@ -716,6 +716,12 @@ Available commands:
         
         private static async Task HandleServerSyncData(dynamic jsonObj)
         {
+            if (jsonObj.files == null)
+            {
+                Console.WriteLine("[SYNC] Server returned no files, skipping synchronisation.");
+                return;
+            }
+            
             var fileList = jsonObj.files;
             foreach (var file in fileList)
             {
@@ -780,7 +786,7 @@ Available commands:
                 var responseText = Encoding.UTF8.GetString(buffer, 0, result.Count);
                 var response = JsonConvert.DeserializeObject<dynamic>(responseText);
 
-                if (response?.command != "SYNC_DATA" || response.files == null)
+                if (response?.command != "SYNC_DATA" || response?.files == null)
                 {
                     Console.WriteLine("[ERROR] Unexpected sync response from server.");
                     return;
