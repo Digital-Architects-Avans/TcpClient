@@ -448,7 +448,7 @@ private static async Task HandleNotificationAsync(string message)
                 if (!string.IsNullOrEmpty(serverHash))
                 {
                     var localHash = await ComputeFileHashAsync(localFilePath);
-                    if (serverHash.Equals(localHash, StringComparison.OrdinalIgnoreCase))
+                    if (serverHash?.Equals(localHash, StringComparison.OrdinalIgnoreCase))
                     {
                         Console.WriteLine($"[INFO] Local hash matches server for '{filename}'; skipping download.");
                         return;
