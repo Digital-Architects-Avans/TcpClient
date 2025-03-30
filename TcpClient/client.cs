@@ -429,6 +429,17 @@ Available commands:
 
                         if (serverTimestamp > localModifiedTime || serverFileSize != localFileSize)
                         {
+                            // Check if we recently uploaded this file — skip redundant download
+                            if (RecentUploads.TryGetValue(filename, out long recentUploadTime))
+                            {
+                                var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - recentUploadTime;
+                                if (elapsed < 20) // threshold to ignore redundant notifications
+                                {
+                                    Console.WriteLine($"[INFO] Notification for '{filename}' ignored (recent upload {elapsed}s ago).");
+                                    return;
+                                }
+                            }
+
                             Console.WriteLine($"[INFO] Newer version of '{filename}' detected. Downloading...");
                             shouldDownload = true;
                         }
