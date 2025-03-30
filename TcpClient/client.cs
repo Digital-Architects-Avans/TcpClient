@@ -55,6 +55,19 @@ namespace TcpServer
 
             StartLocalFileWatcher();
 
+            // Start CLI commands in a separate task  to prevent blocking the main thread for the FileWatcher.
+            var cliTask = Task.Run(StartCommandLoopAsync);
+
+            // Wait for the CLI to complete (on /quit)
+            await cliTask;
+
+            // Cancel and clean up background tasks
+            await _notificationCts.CancelAsync();
+            await notificationTask;
+        }
+
+        private static async Task StartCommandLoopAsync()
+        {
             while (true)
             {
                 Console.Write("Enter command: ");
@@ -65,67 +78,72 @@ namespace TcpServer
                     continue;
                 }
 
-                if (userInput.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    PrintHelp();
-                }
-                else if (userInput.StartsWith("/upload", StringComparison.OrdinalIgnoreCase))
-                {
-                    var parts = userInput.Split(' ', 2);
-                    if (parts.Length < 2)
+                    if (userInput.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
                     {
-                        Console.WriteLine("Usage: /upload <file_path>");
-                        continue;
+                        PrintHelp();
                     }
-
-                    var filePath = parts[1].Trim().Trim('\'', '"');
-                    var relativePath = Path.GetRelativePath(SyncFolder, filePath);
-                    await UploadFileAsync(relativePath);
-                }
-                else if (userInput.StartsWith("/download", StringComparison.OrdinalIgnoreCase))
-                {
-                    var parts = userInput.Split(' ', 2);
-                    if (parts.Length < 2)
+                    else if (userInput.StartsWith("/upload", StringComparison.OrdinalIgnoreCase))
                     {
-                        Console.WriteLine("Usage: /download <file_name>");
-                        continue;
-                    }
+                        var parts = userInput.Split(' ', 2);
+                        if (parts.Length < 2)
+                        {
+                            Console.WriteLine("Usage: /upload <file_path>");
+                            continue;
+                        }
 
-                    var fileName = parts[1].Trim();
-                    var relativePath = Path.GetRelativePath(SyncFolder, fileName);
-                    await DownloadFileAsync(relativePath);
-                }
-                else if (userInput.StartsWith("/delete", StringComparison.OrdinalIgnoreCase))
-                {
-                    var parts = userInput.Split(' ', 2);
-                    if (parts.Length < 2)
+                        var filePath = parts[1].Trim('\'', '"');
+                        var relativePath = Path.GetRelativePath(SyncFolder, filePath);
+                        await UploadFileAsync(relativePath);
+                    }
+                    else if (userInput.StartsWith("/download", StringComparison.OrdinalIgnoreCase))
                     {
-                        Console.WriteLine("Usage: /delete <file_name>");
-                        continue;
-                    }
+                        var parts = userInput.Split(' ', 2);
+                        if (parts.Length < 2)
+                        {
+                            Console.WriteLine("Usage: /download <file_name>");
+                            continue;
+                        }
 
-                    var fileName = parts[1].Trim();
-                    var relativePath = Path.GetRelativePath(SyncFolder, fileName);
-                    await DeleteFileAsync(relativePath);
+                        var fileName = parts[1].Trim();
+                        var relativePath = Path.GetRelativePath(SyncFolder, fileName);
+                        await DownloadFileAsync(relativePath);
+                    }
+                    else if (userInput.StartsWith("/delete", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var parts = userInput.Split(' ', 2);
+                        if (parts.Length < 2)
+                        {
+                            Console.WriteLine("Usage: /delete <file_name>");
+                            continue;
+                        }
+
+                        var fileName = parts[1].Trim();
+                        var relativePath = Path.GetRelativePath(SyncFolder, fileName);
+                        await DeleteFileAsync(relativePath);
+                    }
+                    else if (userInput.StartsWith("/list", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await ListFilesAsync();
+                    }
+                    else if (userInput.StartsWith("/sync", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await SyncFilesAsync();
+                    }
+                    else if (userInput.StartsWith("/quit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine("Shutting down notifications and exiting...");
+                        break;
+                    }
+                    else
+                    {
+                        Console.WriteLine("Unknown command. Type /help for a list of commands.");
+                    }
                 }
-                else if (userInput.StartsWith("/list", StringComparison.OrdinalIgnoreCase))
+                catch (Exception ex)
                 {
-                    await ListFilesAsync();
-                }
-                else if (userInput.StartsWith("/sync", StringComparison.OrdinalIgnoreCase))
-                {
-                    await SyncFilesAsync();
-                }
-                else if (userInput.StartsWith("/quit", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine("Shutting down notifications and exiting...");
-                    await _notificationCts.CancelAsync();
-                    await notificationTask;
-                    break;
-                }
-                else
-                {
-                    Console.WriteLine("Unknown command. Type /help for a list of commands.");
+                    _logger.LogError("Error executing command '{Command}': {Message}", userInput, ex.Message);
                 }
             }
         }
@@ -366,7 +384,7 @@ Available commands:
                 var jsonObj = JsonConvert.DeserializeObject<dynamic>(message);
                 if (jsonObj == null)
                 {
-                    _logger.LogError("[ERROR] Invalid JSON message from server: {message}");
+                    _logger.LogError("[ERROR] Invalid JSON message from server: {message}", message);
                     return;
                 }
 
@@ -376,7 +394,7 @@ Available commands:
                     await HandleServerSyncData(jsonObj);
                     return;
                 }
-                
+
                 // Handle upload request
                 if (jsonObj.command != null && jsonObj.command == "REQUEST_UPLOAD")
                 {
@@ -391,7 +409,8 @@ Available commands:
                             var secondsSinceDownload = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastDownloadTime;
                             if (secondsSinceDownload < UploadCooldownSeconds)
                             {
-                                _logger.LogInformation($"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
+                                _logger.LogInformation(
+                                    $"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
                                 return;
                             }
                         }
@@ -400,12 +419,13 @@ Available commands:
                     }
                     else
                     {
-                        _logger.LogInformation($"[INFO] File does not exist locally. Skipping upload of '{relativePath}'.");
+                        _logger.LogInformation(
+                            $"[INFO] File does not exist locally. Skipping upload of '{relativePath}'.");
                     }
 
                     return;
                 }
-                
+
                 // Handle file-based notifications
                 if (jsonObj.filename == null || jsonObj.@event == null)
                     return;
@@ -413,7 +433,8 @@ Available commands:
                 string file = jsonObj.filename.ToString();
                 if (ShouldIgnoreFile(file))
                 {
-                    _logger.LogInformation( "Ignoring file '{FileName}' as it matches ignored prefixes/suffixes or is a directory.", file);
+                    _logger.LogInformation(
+                        "Ignoring file '{FileName}' as it matches ignored prefixes/suffixes or is a directory.", file);
                     return;
                 }
 
@@ -718,7 +739,7 @@ Available commands:
                 _logger.LogError("Error deleting file: {Message}", ex.Message);
             }
         }
-        
+
         private static async Task HandleServerSyncData(dynamic jsonObj)
         {
             if (jsonObj.files == null)
@@ -726,7 +747,7 @@ Available commands:
                 _logger.LogError("[INFO] Server sync data returned no files, skipping synchronisation.");
                 return;
             }
-            
+
             var fileList = jsonObj.files;
             foreach (var file in fileList)
             {
@@ -799,7 +820,8 @@ Available commands:
 
                 await HandleServerSyncData(response);
 
-                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Sync complete", CancellationToken.None);
+                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Sync complete",
+                    CancellationToken.None);
             }
             catch (Exception ex)
             {
