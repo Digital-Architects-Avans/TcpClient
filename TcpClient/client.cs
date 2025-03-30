@@ -365,8 +365,11 @@ Available commands:
             {
                 var jsonObj = JsonConvert.DeserializeObject<dynamic>(message);
                 if (jsonObj == null)
+                {
+                    _logger.LogError("[ERROR] Invalid JSON message from server: {message}");
                     return;
-                
+                }
+
                 // Handle sync request
                 if (jsonObj.command != null && jsonObj.command == "SYNC_DATA")
                 {
@@ -378,7 +381,7 @@ Available commands:
                 if (jsonObj.command != null && jsonObj.command == "REQUEST_UPLOAD")
                 {
                     string relativePath = jsonObj.filename;
-                    Console.WriteLine($"[SERVER REQUEST] Upload requested for: {relativePath}");
+                    _logger.LogInformation($"[INFO] Received notification for {relativePath}.");
                     var fullPath = Path.Combine(SyncFolder, relativePath);
 
                     if (File.Exists(fullPath))
@@ -388,8 +391,7 @@ Available commands:
                             var secondsSinceDownload = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastDownloadTime;
                             if (secondsSinceDownload < UploadCooldownSeconds)
                             {
-                                Console.WriteLine(
-                                    $"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
+                                _logger.LogInformation($"[INFO] Skipping upload of '{relativePath}' (downloaded {secondsSinceDownload}s ago).");
                                 return;
                             }
                         }
@@ -398,7 +400,7 @@ Available commands:
                     }
                     else
                     {
-                        Console.WriteLine($"[INFO] File '{relativePath}' does not exist locally, skipping upload.");
+                        _logger.LogInformation($"[INFO] File does not exist locally. Skipping upload of '{relativePath}'.");
                     }
 
                     return;
@@ -411,8 +413,7 @@ Available commands:
                 string file = jsonObj.filename.ToString();
                 if (ShouldIgnoreFile(file))
                 {
-                    Console.WriteLine(
-                        $"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
+                    _logger.LogInformation( "Ignoring file '{FileName}' as it matches ignored prefixes/suffixes or is a directory.", file);
                     return;
                 }
 
@@ -722,7 +723,7 @@ Available commands:
         {
             if (jsonObj.files == null)
             {
-                Console.WriteLine("[SYNC] Server returned no files, skipping synchronisation.");
+                _logger.LogError("[INFO] Server sync data returned no files, skipping synchronisation.");
                 return;
             }
             
@@ -753,12 +754,12 @@ Available commands:
                 if (!string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase) ||
                     serverTimestamp > localTimestamp || serverSize != localSize)
                 {
-                    Console.WriteLine($"[SYNC] Outdated: {filename} → Downloading...");
+                    _logger.LogInformation($"[SYNC] Outdated: {filename} → Downloading...");
                     await DownloadFileAsync(filename);
                 }
                 else
                 {
-                    Console.WriteLine($"[SYNC] Up-to-date: {filename}");
+                    _logger.LogInformation($"[SYNC] File '{filename}' already exists.");
                 }
             }
         }
@@ -778,7 +779,7 @@ Available commands:
                 clientWebSocket.Options.RemoteCertificateValidationCallback =
                     (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
-                Console.WriteLine("[INFO] Connected to server for synchronization.");
+                _logger.LogInformation("[INFO] Connected to server for synchronization.");
 
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
@@ -792,7 +793,7 @@ Available commands:
 
                 if (response?.command != "SYNC_DATA" || response?.files == null)
                 {
-                    Console.WriteLine("[ERROR] Unexpected sync response from server.");
+                    _logger.LogError("[ERROR] Unexpected sync response from server.");
                     return;
                 }
 
