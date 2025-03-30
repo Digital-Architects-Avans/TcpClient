@@ -562,8 +562,12 @@ Available commands:
                 int bytesRead;
                 while ((bytesRead = await fileStream.ReadAsync(buffer)) > 0)
                 {
-                    await clientWebSocket.SendAsync(new ArraySegment<byte>(buffer, 0, bytesRead),
-                        WebSocketMessageType.Binary, true, CancellationToken.None);
+                    await clientWebSocket.SendAsync(
+                        new ArraySegment<byte>(buffer, 0, bytesRead),
+                        WebSocketMessageType.Binary,
+                        endOfMessage: false,
+                        CancellationToken.None
+                    );
                 }
 
                 var eofBytes = Encoding.UTF8.GetBytes("EOF");
