@@ -112,6 +112,10 @@ namespace TcpServer
                 {
                     await ListFilesAsync();
                 }
+                else if (userInput.StartsWith("/sync", StringComparison.OrdinalIgnoreCase))
+                {
+                    await SyncFilesAsync();
+                }
                 else if (userInput.StartsWith("/quit", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine("Shutting down notifications and exiting...");
@@ -150,6 +154,7 @@ Available commands:
 /delete <file_name>    - Delete a file from the server.
 /download <file_name>  - Download a file from the server.
 /list                  - List all files on the server.
+/sync                  - Sync all files from the server.
 /quit                  - Exit the application.
 ------------------------------------------------------");
         }
@@ -188,13 +193,14 @@ Available commands:
                         WebSocketMessageType.Text, true, CancellationToken.None);
 
                     _logger.LogInformation($"[INFO] Notification connection established to {_serverUrl}.");
-                    
+
                     var syncRequest = JsonConvert.SerializeObject(new { command = "SYNC" });
                     var syncBytes = Encoding.UTF8.GetBytes(syncRequest);
-                    await _notificationSocket.SendAsync(new ArraySegment<byte>(syncBytes), WebSocketMessageType.Text, true, cancellationToken);
-                    
+                    await _notificationSocket.SendAsync(new ArraySegment<byte>(syncBytes), WebSocketMessageType.Text,
+                        true, cancellationToken);
+
                     _logger.LogInformation("[INFO] Synchronization request sent to server.");
-                    
+
                     var buffer = new byte[8192];
                     while (_notificationSocket.State == WebSocketState.Open &&
                            !cancellationToken.IsCancellationRequested)
@@ -368,36 +374,11 @@ Available commands:
                         $"[INFO] Ignoring file '{file}' as it matches ignored prefixes/suffixes or is a directory.");
                     return;
                 }
-                
+
                 // Handle sync request
                 if (jsonObj.command != null && jsonObj.command == "SYNC_DATA")
                 {
-                    var fileList = jsonObj.files;
-                    foreach (var syncFile in fileList)
-                    {
-                        var filename = syncFile.filename.ToString();
-                        var serverTimestamp = (long)syncFile.timestamp;
-                        var serverSize = (long)syncFile.size;
-                        var serverHash = syncFile.hash?.ToString() ?? "";
-
-                        var localPath = Path.Combine(SyncFolder, filename);
-                        if (!File.Exists(localPath))
-                        {
-                            Console.WriteLine($"[SYNC] File '{filename}' missing locally. Requesting download.");
-                            await DownloadFileAsync(filename);
-                            continue;
-                        }
-
-                        var localSize = new FileInfo(localPath).Length;
-                        var localTimestamp = new DateTimeOffset(File.GetLastWriteTimeUtc(localPath)).ToUnixTimeSeconds();
-                        var localHash = await ComputeFileHashAsync(localPath);
-
-                        if (string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase) &&
-                            serverTimestamp <= localTimestamp && serverSize == localSize) continue;
-                        Console.WriteLine($"[SYNC] File '{filename}' out of date. Downloading...");
-                        await DownloadFileAsync(filename);
-                    }
-
+                    await HandleServerSyncData(jsonObj);
                     return;
                 }
 
@@ -730,6 +711,88 @@ Available commands:
             catch (Exception ex)
             {
                 _logger.LogError("Error deleting file: {Message}", ex.Message);
+            }
+        }
+        
+        private static async Task HandleServerSyncData(dynamic jsonObj)
+        {
+            var fileList = jsonObj.files;
+            foreach (var file in fileList)
+            {
+                var filename = file.filename.ToString();
+                var serverTimestamp = (long)file.timestamp;
+                var serverSize = (long)file.size;
+                var serverHash = file.hash?.ToString() ?? "";
+
+                var localPath = Path.Combine(SyncFolder, filename);
+
+                if (ShouldIgnoreFile(localPath))
+                    continue;
+
+                if (!File.Exists(localPath))
+                {
+                    Console.WriteLine($"[SYNC] Missing: {filename} → Downloading...");
+                    await DownloadFileAsync(filename);
+                    continue;
+                }
+
+                var localSize = new FileInfo(localPath).Length;
+                var localTimestamp = new DateTimeOffset(File.GetLastWriteTimeUtc(localPath)).ToUnixTimeSeconds();
+                var localHash = await ComputeFileHashAsync(localPath);
+
+                if (!string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase) ||
+                    serverTimestamp > localTimestamp || serverSize != localSize)
+                {
+                    Console.WriteLine($"[SYNC] Outdated: {filename} → Downloading...");
+                    await DownloadFileAsync(filename);
+                }
+                else
+                {
+                    Console.WriteLine($"[SYNC] Up-to-date: {filename}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Syncs files via a transient WebSocket connection.
+        ///
+        /// <summary>
+        /// Syncs files by requesting metadata from the server and comparing with local files.
+        /// </summary>
+        private static async Task SyncFilesAsync()
+        {
+            var metadata = new { command = "SYNC" };
+            try
+            {
+                using var clientWebSocket = new ClientWebSocket();
+                clientWebSocket.Options.RemoteCertificateValidationCallback =
+                    (sender, certificate, chain, sslPolicyErrors) => true;
+                await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
+                Console.WriteLine("[INFO] Connected to server for synchronization.");
+
+                var metadataJson = JsonConvert.SerializeObject(metadata);
+                var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
+                    CancellationToken.None);
+
+                var buffer = new byte[16384];
+                var result = await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                var responseText = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                var response = JsonConvert.DeserializeObject<dynamic>(responseText);
+
+                if (response?.command != "SYNC_DATA" || response.files == null)
+                {
+                    Console.WriteLine("[ERROR] Unexpected sync response from server.");
+                    return;
+                }
+
+                await HandleServerSyncData(response);
+
+                await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Sync complete", CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Error during sync: {Message}", ex.Message);
             }
         }
 
