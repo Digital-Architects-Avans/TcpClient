@@ -744,14 +744,16 @@ Available commands:
         {
             if (jsonObj.files == null)
             {
-                _logger.LogError("[INFO] Server sync data returned no files, skipping synchronisation.");
-                return;
+                _logger.LogInformation("[SYNC] Server sync data returned no files, assuming empty file list.");
+                jsonObj.files = Array.Empty<object>(); // treat it as empty list instead of null
             }
 
-            var fileList = jsonObj.files;
-            foreach (var file in fileList)
+            var serverFileSet = new HashSet<string>();
+            foreach (var file in jsonObj.files)
             {
-                var filename = file.filename.ToString();
+                var filename = file.filename.ToString().Replace('\\', '/'); // Normalize for cross-platform
+                serverFileSet.Add(filename);
+
                 var serverTimestamp = (long)file.timestamp;
                 var serverSize = (long)file.size;
                 var serverHash = file.hash?.ToString() ?? "";
@@ -780,7 +782,30 @@ Available commands:
                 }
                 else
                 {
-                    _logger.LogInformation($"[SYNC] File '{filename}' already exists.");
+                    _logger.LogInformation($"[SYNC] File '{filename}' already exists and is up-to-date.");
+                }
+            }
+
+            // Cleanup: Delete local files that are not on the server to ensure full sync.
+            var localFiles = Directory.EnumerateFiles(SyncFolder, "*", SearchOption.AllDirectories)
+                .Select(path => path.Substring(SyncFolder.Length + 1).Replace('\\', '/'));
+
+            foreach (var localFile in localFiles)
+            {
+                var fullPath = Path.Combine(SyncFolder, localFile);
+                if (ShouldIgnoreFile(fullPath))
+                    continue;
+
+                if (serverFileSet.Contains(localFile)) continue;
+                try
+                {
+                    File.Delete(fullPath);
+                    Console.WriteLine($"[SYNC] Removed local file not found on server: {localFile}");
+                    await SendNotificationAsync("deleted", localFile);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"[ERROR] Failed to delete local file '{localFile}': {ex.Message}");
                 }
             }
         }
@@ -911,7 +936,7 @@ Available commands:
         {
             // Get the file name from the path.
             var fileName = Path.GetFileName(path);
-            
+
             // Ignore if we just downloaded it to prevent deleting files after sync.
             if (RecentDownloads.TryGetValue(path.Replace('\\', '/'), out var timestamp))
             {
