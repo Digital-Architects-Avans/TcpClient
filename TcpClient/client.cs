@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using ShellProgressBar;
 
 namespace TcpServer
 {
@@ -56,8 +57,8 @@ namespace TcpServer
             StartLocalFileWatcher();
 
             // Start CLI commands in a separate task  to prevent blocking the main thread for the FileWatcher.
-            var cliTask = Task.Run(StartCommandLoopAsync);
-
+            var cts = new CancellationTokenSource();
+            var cliTask = Task.Run(() => StartCommandLoopAsync(cts.Token), cts.Token);
             // Wait for the CLI to complete (on /quit)
             await cliTask;
 
@@ -66,84 +67,96 @@ namespace TcpServer
             await notificationTask;
         }
 
-        private static async Task StartCommandLoopAsync()
+        private static async Task StartCommandLoopAsync(CancellationToken token)
         {
-            while (true)
+            while (!token.IsCancellationRequested)
             {
-                Console.Write("Enter command: ");
-                var userInput = Console.ReadLine()?.Trim();
-                if (string.IsNullOrEmpty(userInput))
+                if (Console.KeyAvailable)
                 {
-                    Console.WriteLine("Invalid input. Please enter a command.");
-                    continue;
+                    // When a key is pressed, flush the progress bar display by writing a new line.
+                    Console.WriteLine();
+                    Console.Write("Enter command: ");
+                    // Read input on a background thread so it doesn't block the polling loop.
+                    var input = await Task.Run(() => Console.ReadLine()?.Trim(), token);
+                    if (string.IsNullOrEmpty(input))
+                    {
+                        Console.WriteLine("Invalid input. Please enter a command.");
+                        continue;
+                    }
+
+                    try
+                    {
+                        if (input.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
+                        {
+                            PrintHelp();
+                        }
+                        else if (input.StartsWith("/upload", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var parts = input.Split(' ', 2);
+                            if (parts.Length < 2)
+                            {
+                                Console.WriteLine("Usage: /upload <file_path>");
+                                continue;
+                            }
+
+                            var filePath = parts[1].Trim('\'', '"');
+                            var relativePath = Path.GetRelativePath(SyncFolder, filePath);
+                            // Start the upload in a separate task so that the command loop isn’t blocked.
+                            _ = Task.Run(() => UploadFileAsync(relativePath), token);
+                        }
+                        else if (input.StartsWith("/download", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var parts = input.Split(' ', 2);
+                            if (parts.Length < 2)
+                            {
+                                Console.WriteLine("Usage: /download <file_name>");
+                                continue;
+                            }
+
+                            var fileName = parts[1].Trim();
+                            var relativePath = Path.GetRelativePath(SyncFolder, fileName);
+                            _ = Task.Run(() => DownloadFileAsync(relativePath), token);
+                        }
+                        else if (input.StartsWith("/delete", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var parts = input.Split(' ', 2);
+                            if (parts.Length < 2)
+                            {
+                                Console.WriteLine("Usage: /delete <file_name>");
+                                continue;
+                            }
+
+                            var fileName = parts[1].Trim();
+                            var relativePath = Path.GetRelativePath(SyncFolder, fileName);
+                            _ = Task.Run(() => DeleteFileAsync(relativePath), token);
+                        }
+                        else if (input.StartsWith("/list", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _ = Task.Run(ListFilesAsync, token);
+                        }
+                        else if (input.StartsWith("/sync", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _ = Task.Run(SyncFilesAsync, token);
+                        }
+                        else if (input.StartsWith("/quit", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine("Shutting down notifications and exiting...");
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Unknown command. Type /help for a list of commands.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError("Error executing command '{Command}': {Message}", input, ex.Message);
+                    }
                 }
-
-                try
+                else
                 {
-                    if (userInput.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
-                    {
-                        PrintHelp();
-                    }
-                    else if (userInput.StartsWith("/upload", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var parts = userInput.Split(' ', 2);
-                        if (parts.Length < 2)
-                        {
-                            Console.WriteLine("Usage: /upload <file_path>");
-                            continue;
-                        }
-
-                        var filePath = parts[1].Trim('\'', '"');
-                        var relativePath = Path.GetRelativePath(SyncFolder, filePath);
-                        await UploadFileAsync(relativePath);
-                    }
-                    else if (userInput.StartsWith("/download", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var parts = userInput.Split(' ', 2);
-                        if (parts.Length < 2)
-                        {
-                            Console.WriteLine("Usage: /download <file_name>");
-                            continue;
-                        }
-
-                        var fileName = parts[1].Trim();
-                        var relativePath = Path.GetRelativePath(SyncFolder, fileName);
-                        await DownloadFileAsync(relativePath);
-                    }
-                    else if (userInput.StartsWith("/delete", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var parts = userInput.Split(' ', 2);
-                        if (parts.Length < 2)
-                        {
-                            Console.WriteLine("Usage: /delete <file_name>");
-                            continue;
-                        }
-
-                        var fileName = parts[1].Trim();
-                        var relativePath = Path.GetRelativePath(SyncFolder, fileName);
-                        await DeleteFileAsync(relativePath);
-                    }
-                    else if (userInput.StartsWith("/list", StringComparison.OrdinalIgnoreCase))
-                    {
-                        await ListFilesAsync();
-                    }
-                    else if (userInput.StartsWith("/sync", StringComparison.OrdinalIgnoreCase))
-                    {
-                        await SyncFilesAsync();
-                    }
-                    else if (userInput.StartsWith("/quit", StringComparison.OrdinalIgnoreCase))
-                    {
-                        Console.WriteLine("Shutting down notifications and exiting...");
-                        break;
-                    }
-                    else
-                    {
-                        Console.WriteLine("Unknown command. Type /help for a list of commands.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError("Error executing command '{Command}': {Message}", userInput, ex.Message);
+                    // No key pressed: yield control so that progress bars and other output can update.
+                    await Task.Delay(100, token);
                 }
             }
         }
@@ -545,7 +558,10 @@ Available commands:
                 return;
             }
 
-            var metadata = new { command = "UPLOAD", filename = relativePath };
+            var fileSize = new FileInfo(filePath).Length;
+            // Send the fileSize in the JSON command.
+            var metadata = new { command = "UPLOAD", filename = relativePath, fileSize = fileSize };
+
             try
             {
                 using var clientWebSocket = new ClientWebSocket();
@@ -553,32 +569,41 @@ Available commands:
                     (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for upload.");
+
+                // Send upload command metadata.
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
-                    CancellationToken.None);
-                await using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-                var buffer = new byte[8192];
-                int bytesRead;
-                while ((bytesRead = await fileStream.ReadAsync(buffer)) > 0)
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes),
+                    WebSocketMessageType.Text, true, CancellationToken.None);
+
+                // Initialize progress bar.
+                using var progressBar = new ProgressBar(100, $"Uploading {relativePath}", new ProgressBarOptions
                 {
-                    await clientWebSocket.SendAsync(
-                        new ArraySegment<byte>(buffer, 0, bytesRead),
-                        WebSocketMessageType.Binary,
-                        endOfMessage: false,
-                        CancellationToken.None
-                    );
+                    ProgressCharacter = '─',
+                    ProgressBarOnBottom = true
+                });
+
+                long totalSent = 0;
+                var buffer = new byte[8192];
+                await using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+                int bytesRead;
+                while ((bytesRead = await fileStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                {
+                    await clientWebSocket.SendAsync(new ArraySegment<byte>(buffer, 0, bytesRead),
+                        WebSocketMessageType.Binary, false, CancellationToken.None);
+                    totalSent += bytesRead;
+                    var percent = (int)((double)totalSent / fileSize * 100);
+                    progressBar.Tick(percent);
                 }
 
+                // Send EOF marker.
                 var eofBytes = Encoding.UTF8.GetBytes("EOF");
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(eofBytes), WebSocketMessageType.Text, true,
-                    CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(eofBytes),
+                    WebSocketMessageType.Text, true, CancellationToken.None);
+                progressBar.Tick(100);
                 Console.WriteLine($"[INFO] File '{relativePath}' uploaded successfully.");
                 await clientWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Upload complete",
                     CancellationToken.None);
-
-                // Record the upload time so subsequent notifications are ignored.
-                RecentUploads[relativePath] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             }
             catch (Exception ex)
             {
@@ -593,7 +618,7 @@ Available commands:
             if (partialFilesExist)
             {
                 _logger.LogInformation("Stale partial file(s) detected. Starting cleanup task.");
-                _ = Task.Run(() => CleanStalePartialFilesAsync());
+                _ = Task.Run(CleanStalePartialFilesAsync);
             }
             else
             {
@@ -646,10 +671,34 @@ Available commands:
                     (sender, certificate, chain, sslPolicyErrors) => true;
                 await clientWebSocket.ConnectAsync(new Uri(_serverUrl), CancellationToken.None);
                 Console.WriteLine("[INFO] Connected to server for download.");
+
+                // Send download command.
                 var metadataJson = JsonConvert.SerializeObject(metadata);
                 var metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
-                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes), WebSocketMessageType.Text, true,
-                    CancellationToken.None);
+                await clientWebSocket.SendAsync(new ArraySegment<byte>(metadataBytes),
+                    WebSocketMessageType.Text, true, CancellationToken.None);
+
+                // Receive server response JSON with fileSize.
+                var headerBuffer = new byte[8192];
+                var headerResult =
+                    await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(headerBuffer), CancellationToken.None);
+                long totalFileSize = 0;
+                if (headerResult.MessageType == WebSocketMessageType.Text)
+                {
+                    var headerMessage = Encoding.UTF8.GetString(headerBuffer, 0, headerResult.Count);
+                    var downloadInfo = JsonConvert.DeserializeObject<dynamic>(headerMessage);
+                    if (downloadInfo != null && downloadInfo?.fileSize != null)
+                    {
+                        totalFileSize = (long)downloadInfo?.fileSize;
+                    }
+                    else
+                    {
+                        Console.WriteLine(
+                            "[WARNING] Download info is missing or incomplete. Progress bar will be indeterminate.");
+                        totalFileSize = 0;
+                    }
+                }
+
                 var tempFilePath = Path.Combine(SyncFolder, tempFileName);
                 var newFilePath = Path.Combine(SyncFolder, relativePath);
                 var fileDirectory = Path.GetDirectoryName(newFilePath);
@@ -659,8 +708,16 @@ Available commands:
                 }
 
                 await using var fileStream = new FileStream(tempFilePath, FileMode.Create, FileAccess.Write);
+                using var progressBar = new ProgressBar(totalFileSize > 0 ? (int)totalFileSize : 100,
+                    $"Downloading {relativePath}", new ProgressBarOptions
+                    {
+                        ProgressCharacter = '─',
+                        ProgressBarOnBottom = true
+                    });
+
                 var buffer = new byte[8192];
-                bool eofReceived = false;
+                var totalBytesReceived = 0;
+                var eofReceived = false;
                 while (clientWebSocket.State == WebSocketState.Open && !eofReceived)
                 {
                     var result =
@@ -668,16 +725,30 @@ Available commands:
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
                         var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        if (message != "EOF") continue;
-                        eofReceived = true;
-                        break;
+                        if (message == "EOF")
+                        {
+                            break;
+                        }
+
+                        continue;
                     }
 
                     if (result.MessageType == WebSocketMessageType.Binary)
                     {
-                        await fileStream.WriteAsync(buffer.AsMemory(0, result.Count));
+                        await fileStream.WriteAsync(buffer, 0, result.Count);
+                        totalBytesReceived += result.Count;
+                        if (totalFileSize > 0)
+                        {
+                            progressBar.Tick(totalBytesReceived);
+                        }
+                        else
+                        {
+                            progressBar.Tick();
+                        }
                     }
                 }
+
+                progressBar.Tick(totalFileSize > 0 ? (int)totalFileSize : 100);
 
                 if (File.Exists(newFilePath))
                 {
@@ -814,9 +885,6 @@ Available commands:
             }
         }
 
-        /// <summary>
-        /// Syncs files via a transient WebSocket connection.
-        ///
         /// <summary>
         /// Syncs files by requesting metadata from the server and comparing with local files.
         /// </summary>
